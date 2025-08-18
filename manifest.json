@@ -25,7 +25,6 @@
       "resources": [
         "inject.js", 
         "inject-reconstructor.js", 
-        "fallback-data.js",
         "import-interface-content.js",
         "import-interface.css"
       ],
