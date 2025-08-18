@@ -8,6 +8,9 @@ window.katapultModelAttributesData = {};
 window.katapultProcessedNodeTypes = [];
 window.katapultProcessedConnectionTypes = [];
 
+// Timer for delayed reconstruction
+let reconstructionTimer = null;
+
 console.log('[Cloneable Extension] Debug function available: window.debugNodeTypes()');
 
 const originalWebSocket = window.WebSocket;
@@ -31,6 +34,24 @@ window.WebSocket = function(url, protocols) {
     };
     
     window.katapultWebSocketMessages.push(messageObj);
+    
+    // Send status update to content script
+    window.postMessage({
+      type: 'cloneable-websocket-update',
+      messageCount: window.katapultWebSocketMessages.length,
+      socketCount: 1
+    }, '*');
+    
+    // Schedule reconstruction after a delay to batch messages
+    if (reconstructionTimer) {
+      clearTimeout(reconstructionTimer);
+    }
+    reconstructionTimer = setTimeout(() => {
+      if (window.katapultWebSocketMessages.length > 0) {
+        console.log('[Cloneable Extension] Triggering delayed reconstruction with', window.katapultWebSocketMessages.length, 'messages');
+        reconstructFullModel();
+      }
+    }, 3000); // Wait 3 seconds after last message
     
     // Try to parse as complete JSON for immediate processing
     try {
@@ -82,6 +103,11 @@ for (const key in originalWebSocket) {
 }
 
 console.log('[Cloneable Extension] WebSocket interceptor installed');
+
+// Alias for reconstruction function
+function reconstructFullModel() {
+  performReconstructionFinalization();
+}
 
 // DUMPER-STYLE RECONSTRUCTION - exactly like our working dumper scripts
 function performReconstructionFinalization() {
@@ -264,10 +290,15 @@ function performReconstructionFinalization() {
     nodeTypes: window.katapultProcessedNodeTypes || [],
     connectionTypes: window.katapultProcessedConnectionTypes || [],
     attributes: reconstructedAttributes,
+    processedAttributes: window.katapultProcessedAttributes || { withPicklists: [], withoutPicklists: [] },
+    imageClassifications: window.katapultProcessedImageClassifications || [],
     modelData: dataByPath,
     nodeTypesCount: window.katapultProcessedNodeTypes ? window.katapultProcessedNodeTypes.length : 0,
     connectionTypesCount: window.katapultProcessedConnectionTypes ? window.katapultProcessedConnectionTypes.length : 0,
-    attributesCount: Object.keys(reconstructedAttributes).length
+    attributesCount: Object.keys(reconstructedAttributes).length,
+    processedPicklistsCount: window.katapultProcessedAttributes ? window.katapultProcessedAttributes.withPicklists.length : 0,
+    processedFreeformCount: window.katapultProcessedAttributes ? window.katapultProcessedAttributes.withoutPicklists.length : 0,
+    imageClassificationsCount: window.katapultProcessedImageClassifications ? window.katapultProcessedImageClassifications.length : 0
   }, '*');
   
   console.log('[Cloneable Extension] ✅ Data sent to content script:', {
@@ -367,6 +398,170 @@ function processAttributesData(attributesData) {
     });
     
     console.log(`[Cloneable Extension] ✅ Processed ${window.katapultProcessedConnectionTypes.length} connection types`);
+  }
+  
+  // Process all other attributes 
+  console.log('[Cloneable Extension] 🔧 Processing general attributes...');
+  window.katapultProcessedAttributes = {
+    withPicklists: [],
+    withoutPicklists: []
+  };
+  
+  Object.entries(attributesData).forEach(([attrName, attrData]) => {
+    // Skip node_type and cable_type as they're handled separately above
+    if (attrName === 'node_type' || attrName === 'cable_type') {
+      return;
+    }
+    
+    if (attrData && typeof attrData === 'object') {
+      // Check if this attribute has picklists
+      if (attrData.picklists && Object.keys(attrData.picklists).length > 0) {
+        // This is a picklist attribute - process like node_type/cable_type
+        const categories = Object.keys(attrData.picklists);
+        const values = {};
+        
+        categories.forEach(category => {
+          const categoryData = attrData.picklists[category];
+          if (categoryData && typeof categoryData === 'object') {
+            values[category] = [];
+            Object.entries(categoryData).forEach(([key, valueObj]) => {
+              // Extract the actual value - it's nested in a .value property
+              let displayName;
+              if (valueObj && typeof valueObj === 'object' && valueObj.value) {
+                displayName = valueObj.value;
+              } else if (typeof valueObj === 'string') {
+                displayName = valueObj;
+              } else {
+                displayName = key; // fallback to key
+              }
+              
+              values[category].push(displayName);
+            });
+          }
+        });
+        
+        window.katapultProcessedAttributes.withPicklists.push({
+          name: attrName,
+          displayName: attrName.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '),
+          dataType: 'picklist',
+          required: attrData.required || false,
+          categories: categories,
+          values: values,
+          attribute_types: attrData.attribute_types || {}
+        });
+        
+        console.log(`[Cloneable Extension] ✅ Processed picklist attribute: ${attrName} (${categories.length} categories)`);
+      } else {
+        // This is a free-form attribute
+        window.katapultProcessedAttributes.withoutPicklists.push({
+          name: attrName,
+          displayName: attrName.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '),
+          dataType: 'text', // simplified for now
+          required: attrData.required || false,
+          attribute_types: attrData.attribute_types || {}
+        });
+        
+        console.log(`[Cloneable Extension] ✅ Processed free-form attribute: ${attrName}`);
+      }
+    }
+  });
+  
+  console.log(`[Cloneable Extension] 📊 Processed ${window.katapultProcessedAttributes.withPicklists.length} picklist attributes and ${window.katapultProcessedAttributes.withoutPicklists.length} free-form attributes`);
+  
+  // Process image classifications from input_models
+  console.log('[Cloneable Extension] 📸 Processing image classifications...');
+  window.katapultProcessedImageClassifications = [];
+  
+  // Look for input_models data in the globally stored model data
+  // Try multiple possible paths since company name may vary
+  const possiblePaths = [
+    'photoheight/company_space/cloneable&period;ai/models/input_models',
+    // Check all paths that contain /models/input_models
+    ...Object.keys(window.katapultModelAttributesData).filter(path => path.includes('/models/input_models'))
+  ];
+  
+  let inputModelsData = null;
+  let foundPath = null;
+  
+  for (const path of possiblePaths) {
+    if (window.katapultModelAttributesData[path]) {
+      inputModelsData = window.katapultModelAttributesData[path];
+      foundPath = path;
+      break;
+    }
+  }
+  
+  if (inputModelsData && typeof inputModelsData === 'object') {
+    console.log(`[Cloneable Extension] Found input_models at ${foundPath} with ${Object.keys(inputModelsData).length} items`);
+    
+    Object.entries(inputModelsData).forEach(([key, modelData]) => {
+      if (modelData && typeof modelData === 'object') {
+        // Only include items with element_type of 'chip' - these are the actual image classifications
+        // Skip 'point' types and other non-classification items
+        const isImageClassification = modelData.element_type === 'chip';
+        
+        if (isImageClassification) {
+          // Format the display name  
+          const displayName = key
+            .replace(/_/g, ' ')
+            .replace(/([A-Z])/g, ' $1')
+            .split(' ')
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+            .join(' ')
+            .replace(/^Cable Tag$/, 'CableTag')  // Special case
+            .replace(/^Pole Tag$/, 'Pole Tag')
+            .replace(/^Pole Top$/, 'Pole Top')
+            .replace(/^No Tag$/, 'No Tag')
+            .replace(/^No Birthmark$/, 'No Birthmark')
+            .replace(/^Sync And Job$/, 'Sync And Job');
+          
+          // Extract shortcut (try multiple sources)
+          let shortcut = modelData.shortcut || modelData._shortcut;
+          if (!shortcut) {
+            // Generate shortcut from name if not provided
+            if (key === 'anchor_point') shortcut = 'a';
+            else if (key === 'back') shortcut = 'b';  
+            else if (key === 'cableTag') shortcut = 'c';
+            else if (key === 'grounding') shortcut = 'g';
+            else if (key === 'hallway') shortcut = 'h';
+            else if (key === 'miscellaneous') shortcut = 'l';
+            else if (key === 'midspanHeight') shortcut = 'm';
+            else if (key === 'note') shortcut = 'n';
+            else if (key === 'osmose') shortcut = 'o';
+            else if (key === 'poleHeight') shortcut = 'p';
+            else if (key === 'rubbish') shortcut = 'r';
+            else if (key === 'side') shortcut = 's';
+            else if (key === 'pole_tag') shortcut = 't';
+            else if (key === 'upshot') shortcut = 'u';
+            else if (key === 'no_tag') shortcut = 'x';
+            else if (key === 'no_birthmark') shortcut = 'z';
+            else if (key === 'pole_top') shortcut = '4';
+            else if (key === 'sync_and_job') shortcut = 'j';
+            else shortcut = key.charAt(0); // fallback
+          }
+          
+          window.katapultProcessedImageClassifications.push({
+            key: key,
+            name: displayName,
+            shortcut: shortcut,
+            elementType: modelData.element_type || 'chip',
+            color: modelData._color || 'var(--paper-grey-500)',
+            textColor: modelData._text_color || 'white',
+            editable: modelData.editability !== 'uneditable',
+            hasAttributes: !!modelData._attributes,
+            helpText: modelData._help_text || modelData._help_link || null,
+            originalData: modelData
+          });
+          
+          console.log(`[Cloneable Extension] ✅ Processed image classification: ${displayName} (${shortcut})`);
+        }
+      }
+    });
+    
+    console.log(`[Cloneable Extension] 📊 Processed ${window.katapultProcessedImageClassifications.length} image classifications`);
+  } else {
+    console.log('[Cloneable Extension] ⚠️ No input_models data found for image classifications');
+    console.log('[Cloneable Extension] Available paths:', Object.keys(window.katapultModelAttributesData).filter(p => p.includes('models')));
   }
 }
 
