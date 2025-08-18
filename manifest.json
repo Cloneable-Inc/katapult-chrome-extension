@@ -22,7 +22,13 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["inject.js", "inject-reconstructor.js", "fallback-data.js"],
+      "resources": [
+        "inject.js", 
+        "inject-reconstructor.js", 
+        "fallback-data.js",
+        "import-interface-content.js",
+        "import-interface.css"
+      ],
       "matches": ["https://katapultpro.com/*", "https://*.katapultpro.com/*"]
     }
   ],
