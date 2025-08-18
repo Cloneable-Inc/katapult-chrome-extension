@@ -1,0 +1,38 @@
+# Node modules
+node_modules/
+package-lock.json
+
+# Test and development files
+test-*.js
+websocket-*.js
+websocket-*.json
+*.json
+!manifest.json
+!package.json
+parse-websocket-json.js
+run-parser-timed.js
+monitor-model-editor.js
+model-data-extracted.json
+
+# Session data
+katapult-session/
+katapult-auth.json
+katapult-data-*.json
+test-profile/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Claude files
+.claude/
