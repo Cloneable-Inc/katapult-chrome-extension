@@ -2143,12 +2143,17 @@ class ImportInterface {
       // Check in picklist attributes
       const picklistAttr = this.availableAttributes.withPicklists.find(a => a.name === attrName);
       if (picklistAttr) {
+        // Make sure we have values, and if not, try to find them
+        const picklistValues = picklistAttr.values || picklistAttr.picklistOptions || {};
+        
         return {
-          name: attrName,
-          displayName: picklistAttr.displayName,
+          name: {
+            name: attrName,
+            type: 'picklist'
+          },
           dataType: 'picklist',
-          categories: picklistAttr.categories,
-          values: picklistAttr.values
+          displayName: picklistAttr.displayName,
+          picklistOptions: picklistValues // Include all available picklist values
         };
       }
       
@@ -2156,14 +2161,23 @@ class ImportInterface {
       const freeformAttr = this.availableAttributes.withoutPicklists.find(a => a.name === attrName);
       if (freeformAttr) {
         return {
-          name: attrName,
-          displayName: freeformAttr.displayName,
-          dataType: freeformAttr.dataType || 'text'
+          name: {
+            name: attrName,
+            type: 'freeform'
+          },
+          dataType: freeformAttr.dataType || 'text',
+          displayName: freeformAttr.displayName
         };
       }
       
       // Fallback if not found
-      return { name: attrName, dataType: 'text' };
+      return { 
+        name: {
+          name: attrName,
+          type: 'unknown'
+        },
+        dataType: 'text' 
+      };
     };
     
     return {
@@ -2174,7 +2188,22 @@ class ImportInterface {
       nodes: this.selectedNodes.map(node => {
         // Get selected attributes for this node with their metadata
         const nodeAttrs = this.nodeAttributes[node.id] || [];
-        const enrichedAttributes = nodeAttrs.map(attrName => getAttributeMetadata(attrName));
+        const enrichedAttributes = nodeAttrs.map(attr => {
+          // Extract the attribute name from the object
+          const attrName = typeof attr === 'string' ? attr : attr.name;
+          const metadata = getAttributeMetadata(attrName);
+          
+          // Ensure we include picklistOptions for picklist attributes
+          if (metadata.dataType === 'picklist' && !metadata.picklistOptions) {
+            // Find the attribute in our available attributes to get its picklist values
+            const picklistAttr = this.availableAttributes.withPicklists.find(a => a.name === attrName);
+            if (picklistAttr) {
+              metadata.picklistOptions = picklistAttr.values;
+            }
+          }
+          
+          return metadata;
+        });
         
         return {
           id: node.id,
@@ -2187,7 +2216,10 @@ class ImportInterface {
       connections: this.selectedConnections.map(conn => {
         // Get selected attributes for this connection with their metadata
         const connAttrs = this.connectionAttributes[conn.id] || [];
-        const enrichedAttributes = connAttrs.map(attrName => getAttributeMetadata(attrName));
+        const enrichedAttributes = connAttrs.map(attr => {
+          const attrName = typeof attr === 'string' ? attr : attr.name;
+          return getAttributeMetadata(attrName);
+        });
         
         return {
           id: conn.id,
@@ -2200,7 +2232,10 @@ class ImportInterface {
       sections: this.selectedSections.map(section => {
         // Get selected attributes for this section with their metadata
         const sectionAttrs = this.sectionAttributes[section.id] || [];
-        const enrichedAttributes = sectionAttrs.map(attrName => getAttributeMetadata(attrName));
+        const enrichedAttributes = sectionAttrs.map(attr => {
+          const attrName = typeof attr === 'string' ? attr : attr.name;
+          return getAttributeMetadata(attrName);
+        });
         
         return {
           id: section.id,

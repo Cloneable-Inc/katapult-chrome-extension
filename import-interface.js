@@ -510,6 +510,45 @@ class ImportInterface {
   }
 
   buildExportData() {
+    // Helper function to get attribute metadata
+    const getAttributeMetadata = (attr) => {
+      // Check in picklist attributes
+      const picklistAttr = this.availableAttributes.withPicklists.find(a => a.name === attr.name);
+      if (picklistAttr) {
+        return {
+          name: {
+            name: attr.name,
+            type: 'picklist'
+          },
+          dataType: 'picklist',
+          displayName: picklistAttr.displayName,
+          picklistOptions: picklistAttr.values // Include all available picklist values
+        };
+      }
+      
+      // Check in free-form attributes
+      const freeformAttr = this.availableAttributes.withoutPicklists.find(a => a.name === attr.name);
+      if (freeformAttr) {
+        return {
+          name: {
+            name: attr.name,
+            type: 'freeform'
+          },
+          dataType: freeformAttr.dataType || 'text',
+          displayName: freeformAttr.displayName
+        };
+      }
+      
+      // Fallback if not found
+      return { 
+        name: {
+          name: attr.name,
+          type: attr.type || 'unknown'
+        },
+        dataType: 'text' 
+      };
+    };
+    
     return {
       version: '1.0',
       timestamp: new Date().toISOString(),
@@ -517,10 +556,13 @@ class ImportInterface {
       target: 'cloneable',
       nodes: this.selectedNodes.map(node => ({
         id: node.id,
-        type: `${node.category}:${node.type}`,
-        attributes: this.nodeAttributes[node.id] || [],
+        type: node.type,
+        category: node.category,
+        attributes: (this.nodeAttributes[node.id] || []).map(attr => getAttributeMetadata(attr)),
         images: this.imageAttachments[node.id] || []
-      }))
+      })),
+      connections: [],
+      sections: []
     };
   }
 
