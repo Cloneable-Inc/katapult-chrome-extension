@@ -204,8 +204,18 @@ class ImportInterface {
         </div>
 
         <div class="import-footer">
+          <div class="environment-selector">
+            <label>
+              <input type="radio" name="environment" value="production" checked>
+              <span>Production (app.cloneable.ai)</span>
+            </label>
+            <label>
+              <input type="radio" name="environment" value="development">
+              <span>Development (localhost:3000)</span>
+            </label>
+          </div>
           <button class="btn-secondary" id="preview-json-btn">Preview JSON</button>
-          <button class="btn-primary" id="export-data-btn">Export to Cloneable</button>
+          <button class="btn-primary" id="export-data-btn">Send to Cloneable</button>
         </div>
       </div>
     `;
@@ -516,15 +526,30 @@ class ImportInterface {
 
   exportData() {
     const data = this.buildExportData();
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `katapult-export-${Date.now()}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const jsonString = JSON.stringify(data);
+    
+    // Base64 encode the JSON data
+    const base64Data = btoa(jsonString);
+    
+    // Get selected environment
+    const environment = document.querySelector('input[name="environment"]:checked').value;
+    
+    // Construct the URL based on environment
+    let targetUrl;
+    if (environment === 'production') {
+      targetUrl = `https://app.cloneable.ai/tools/pole-inspect/import?katapult_data=${encodeURIComponent(base64Data)}`;
+    } else {
+      targetUrl = `http://localhost:3000/tools/pole-inspect/import?katapult_data=${encodeURIComponent(base64Data)}`;
+    }
+    
+    // Open in new tab
+    window.open(targetUrl, '_blank');
+    
+    // Close the modal
+    const modal = document.getElementById('import-modal');
+    if (modal) {
+      modal.remove();
+    }
   }
 
   getCurrentNodeId() {
