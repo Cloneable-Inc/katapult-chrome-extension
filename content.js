@@ -691,6 +691,9 @@ class ImportInterface {
             <!-- Selection summary removed - selections are visible in checkboxes -->
             
             <div class="step-actions">
+              <button class="btn-secondary" id="download-reconstructed-btn" title="Download all captured WebSocket data">
+                📥 Download Captured Data
+              </button>
               <button class="btn-primary" id="configure-attributes-btn" disabled>
                 Configure Selected Items →
               </button>
@@ -771,6 +774,11 @@ class ImportInterface {
         self.toggleSelection(e.target);
         self.updateConfigureButton();
       });
+    });
+    
+    // Download reconstructed data button
+    modal.querySelector('#download-reconstructed-btn').addEventListener('click', () => {
+      self.downloadReconstructedData();
     });
     
     // Step navigation
@@ -2137,6 +2145,82 @@ class ImportInterface {
     document.body.appendChild(modal);
   }
 
+  // Get visualization rules - these should be loaded from Katapult's system
+  getKnownVisualizationRules() {
+    // Check if we have captured visualization rules from WebSocket
+    if (window.katapultVisualizationRules) {
+      return window.katapultVisualizationRules;
+    }
+    
+    // Check if rules are defined in the available attributes
+    const rules = {};
+    
+    // Look through all attributes to see if they have visualization metadata
+    if (this.availableAttributes && this.availableAttributes.withPicklists) {
+      this.availableAttributes.withPicklists.forEach(attr => {
+        if (attr.visualizationRule) {
+          rules[attr.name] = attr.visualizationRule;
+        }
+      });
+    }
+    
+    if (this.availableAttributes && this.availableAttributes.withoutPicklists) {
+      this.availableAttributes.withoutPicklists.forEach(attr => {
+        if (attr.visualizationRule) {
+          rules[attr.name] = attr.visualizationRule;
+        }
+      });
+    }
+    
+    // Fallback: Known rules from observation (should be replaced with actual data)
+    // Only include if we know for certain from the system
+    if (!Object.keys(rules).length) {
+      // Based on your observation that 'done' changes color
+      rules['done'] = {
+        attributeName: 'done',
+        ruleType: 'color_change',
+        condition: 'when_true',
+        effect: 'changes_node_color',
+        description: 'Changes node color on map when done=true',
+        source: 'user_reported'
+      };
+    }
+    
+    return rules;
+  }
+  
+  // Get visualization rules for an entity based on selected attributes
+  getVisualizationRules(entity, selectedAttributes, entityType = 'node') {
+    const nodeAttrs = selectedAttributes || [];
+    const knownRules = this.getKnownVisualizationRules();
+    const applicableRules = [];
+    
+    // Extract attribute names
+    const attributeNames = nodeAttrs.map(attr => 
+      typeof attr === 'string' ? attr : attr.name
+    );
+    
+    // Find which known rules apply based on selected attributes
+    attributeNames.forEach(attrName => {
+      if (knownRules[attrName]) {
+        applicableRules.push(knownRules[attrName]);
+      }
+    });
+    
+    // Return metadata with applicable rules
+    return {
+      entityType: entityType,
+      baseType: entity.type,
+      category: entity.category,
+      selectedAttributes: attributeNames,
+      visualizationRules: applicableRules,
+      metadata: {
+        hasVisualizationRules: applicableRules.length > 0,
+        ruleCount: applicableRules.length
+      }
+    };
+  }
+
   buildExportData() {
     // Helper function to get attribute metadata
     const getAttributeMetadata = (attrName) => {
@@ -2205,12 +2289,16 @@ class ImportInterface {
           return metadata;
         });
         
+        // Get visualization rules for this node
+        const visualizationRules = this.getVisualizationRules(node, nodeAttrs, 'node');
+        
         return {
           id: node.id,
           type: node.type,
           category: node.category,
           attributes: enrichedAttributes,
-          images: this.imageAttachments[node.id] || []
+          images: this.imageAttachments[node.id] || [],
+          visualizationRules: visualizationRules
         };
       }),
       connections: this.selectedConnections.map(conn => {
@@ -2221,12 +2309,16 @@ class ImportInterface {
           return getAttributeMetadata(attrName);
         });
         
+        // Get visualization rules for this connection
+        const visualizationRules = this.getVisualizationRules(conn, connAttrs, 'connection');
+        
         return {
           id: conn.id,
           type: conn.type,
           category: conn.category,
           attributes: enrichedAttributes,
-          images: this.imageAttachments[conn.id] || []
+          images: this.imageAttachments[conn.id] || [],
+          visualizationRules: visualizationRules
         };
       }),
       sections: this.selectedSections.map(section => {
@@ -2237,43 +2329,105 @@ class ImportInterface {
           return getAttributeMetadata(attrName);
         });
         
+        // Get visualization rules for this section
+        const visualizationRules = this.getVisualizationRules(section, sectionAttrs, 'section');
+        
         return {
           id: section.id,
           type: section.type,
           category: section.category,
           attributes: enrichedAttributes,
-          images: this.imageAttachments[section.id] || []
+          images: this.imageAttachments[section.id] || [],
+          visualizationRules: visualizationRules
         };
       })
     };
   }
 
+  downloadReconstructedData() {
+    console.log('[ImportInterface] Downloading reconstructed data...');
+    
+    // Gather all captured data from the window object
+    const capturedData = {
+      metadata: {
+        timestamp: new Date().toISOString(),
+        source: 'katapult-pro-websocket',
+        version: '1.0'
+      },
+      rawMessages: window.katapultWebSocketMessages || [],
+      reconstructedAttributes: window.katapultReconstructedAttributes || {},
+      processedNodeTypes: window.katapultProcessedNodeTypes || {},
+      availableAttributes: this.availableAttributes || {},
+      photoClassifications: this.photoClassifications || [],
+      statistics: {
+        totalMessages: (window.katapultWebSocketMessages || []).length,
+        attributeCount: Object.keys(window.katapultReconstructedAttributes || {}).length,
+        nodeTypeCategories: Object.keys(window.katapultProcessedNodeTypes || {}).length
+      }
+    };
+    
+    // Create a pretty-printed JSON string
+    const jsonString = JSON.stringify(capturedData, null, 2);
+    
+    // Create a blob and download link
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    
+    // Create download link and trigger it
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `katapult-reconstructed-data-${timestamp}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    console.log(`[ImportInterface] Downloaded ${jsonString.length} bytes of data`);
+    
+    // Show a notification or feedback
+    const btn = document.getElementById('download-reconstructed-btn');
+    if (btn) {
+      const originalText = btn.innerText;
+      btn.innerText = '✅ Downloaded!';
+      btn.disabled = true;
+      setTimeout(() => {
+        btn.innerText = originalText;
+        btn.disabled = false;
+      }, 2000);
+    }
+  }
+
   exportData() {
     const data = this.buildExportData();
-    const jsonString = JSON.stringify(data);
-    
-    // Base64 encode the JSON data
-    const base64Data = btoa(jsonString);
     
     // Get selected environment
     const environment = document.querySelector('input[name="environment"]:checked').value;
     
-    // Construct the URL based on environment
-    let targetUrl;
-    if (environment === 'production') {
-      targetUrl = `https://app.cloneable.ai/tools/pole-inspect/import?katapult_data=${encodeURIComponent(base64Data)}`;
-    } else {
-      targetUrl = `http://localhost:3000/tools/pole-inspect/import?katapult_data=${encodeURIComponent(base64Data)}`;
-    }
+    // Construct the target URL based on environment
+    const targetUrl = environment === 'production' 
+      ? 'https://app.cloneable.ai/tools/pole-inspect/import'
+      : 'http://localhost:3000/tools/pole-inspect/import';
     
-    // Open in new tab
-    window.open(targetUrl, '_blank');
-    
-    // Close the modal
-    const modal = document.getElementById('import-modal');
-    if (modal) {
-      modal.remove();
-    }
+    // Use Chrome extension messaging to open tab with data
+    chrome.runtime.sendMessage({
+      type: 'OPEN_TAB_WITH_DATA',
+      targetUrl: targetUrl,
+      data: data
+    }, (response) => {
+      if (response && response.success) {
+        console.log('[Cloneable Extension] Successfully opened tab with data, tabId:', response.tabId);
+        
+        // Close the modal
+        const modal = document.getElementById('import-modal');
+        if (modal) {
+          modal.remove();
+        }
+      } else {
+        console.error('[Cloneable Extension] Failed to open tab with data');
+        alert('Failed to export data. Please try again.');
+      }
+    });
   }
 }
 

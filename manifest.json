@@ -6,7 +6,8 @@
   "permissions": [
     "activeTab",
     "webRequest",
-    "storage"
+    "storage",
+    "tabs"
   ],
   "host_permissions": [
     "https://katapultpro.com/*",

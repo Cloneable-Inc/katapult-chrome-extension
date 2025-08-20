@@ -568,30 +568,34 @@ class ImportInterface {
 
   exportData() {
     const data = this.buildExportData();
-    const jsonString = JSON.stringify(data);
-    
-    // Base64 encode the JSON data
-    const base64Data = btoa(jsonString);
     
     // Get selected environment
     const environment = document.querySelector('input[name="environment"]:checked').value;
     
-    // Construct the URL based on environment
-    let targetUrl;
-    if (environment === 'production') {
-      targetUrl = `https://app.cloneable.ai/tools/pole-inspect/import?katapult_data=${encodeURIComponent(base64Data)}`;
-    } else {
-      targetUrl = `http://localhost:3000/tools/pole-inspect/import?katapult_data=${encodeURIComponent(base64Data)}`;
-    }
+    // Construct the target URL based on environment
+    const targetUrl = environment === 'production' 
+      ? 'https://app.cloneable.ai/tools/pole-inspect/import'
+      : 'http://localhost:3000/tools/pole-inspect/import';
     
-    // Open in new tab
-    window.open(targetUrl, '_blank');
-    
-    // Close the modal
-    const modal = document.getElementById('import-modal');
-    if (modal) {
-      modal.remove();
-    }
+    // Use Chrome extension messaging to open tab with data
+    chrome.runtime.sendMessage({
+      type: 'OPEN_TAB_WITH_DATA',
+      targetUrl: targetUrl,
+      data: data
+    }, (response) => {
+      if (response && response.success) {
+        console.log('[Cloneable Extension] Successfully opened tab with data, tabId:', response.tabId);
+        
+        // Close the modal
+        const modal = document.getElementById('import-modal');
+        if (modal) {
+          modal.remove();
+        }
+      } else {
+        console.error('[Cloneable Extension] Failed to open tab with data');
+        alert('Failed to export data. Please try again.');
+      }
+    });
   }
 
   getCurrentNodeId() {
