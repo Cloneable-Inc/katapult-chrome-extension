@@ -209,7 +209,7 @@ class ImportInterface {
               <input type="radio" name="environment" value="production" checked>
               <span>Production (app.cloneable.ai)</span>
             </label>
-            <label>
+            <label id="dev-environment-label" style="display: none;">
               <input type="radio" name="environment" value="development">
               <span>Development (localhost:3000)</span>
             </label>
@@ -286,6 +286,68 @@ class ImportInterface {
     modal.querySelector('#export-data-btn').addEventListener('click', () => {
       self.exportData();
     });
+    
+    // Secret keyboard shortcut to show localhost option
+    // Press Ctrl+Shift+D (or Cmd+Shift+D on Mac) to toggle dev mode
+    modal.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'D') {
+        e.preventDefault();
+        const devLabel = modal.querySelector('#dev-environment-label');
+        if (devLabel) {
+          const isHidden = devLabel.style.display === 'none';
+          devLabel.style.display = isHidden ? 'inline-block' : 'none';
+          
+          // Show a subtle notification
+          if (isHidden) {
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+              position: fixed;
+              bottom: 20px;
+              right: 20px;
+              background: #333;
+              color: white;
+              padding: 10px 15px;
+              border-radius: 5px;
+              font-size: 12px;
+              z-index: 10000;
+            `;
+            notification.textContent = '🔧 Developer mode enabled';
+            modal.appendChild(notification);
+            setTimeout(() => notification.remove(), 2000);
+          }
+        }
+      }
+    });
+    
+    // Alternative: Triple-click on the title to show dev options
+    const modalTitle = modal.querySelector('h2');
+    let clickCount = 0;
+    let clickTimer = null;
+    
+    if (modalTitle) {
+      modalTitle.style.cursor = 'default';
+      modalTitle.addEventListener('click', () => {
+        clickCount++;
+        
+        if (clickTimer) clearTimeout(clickTimer);
+        
+        if (clickCount >= 3) {
+          const devLabel = modal.querySelector('#dev-environment-label');
+          if (devLabel && devLabel.style.display === 'none') {
+            devLabel.style.display = 'inline-block';
+            
+            // Visual feedback
+            modalTitle.style.color = '#4CAF50';
+            setTimeout(() => modalTitle.style.color = '', 500);
+          }
+          clickCount = 0;
+        }
+        
+        clickTimer = setTimeout(() => {
+          clickCount = 0;
+        }, 500);
+      });
+    }
     
     // Use event delegation for dynamically added elements
     modal.addEventListener('click', (e) => {
