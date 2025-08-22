@@ -1,5 +1,6 @@
-// Cloneable Extension - WebSocket Interceptor with DUMPER-STYLE reconstruction
-// This script must be injected into the page context to intercept WebSockets
+// Cloneable Extension - WebSocket Interceptor
+// This script intercepts WebSocket messages and reconstructs complete JSON from all messages
+// FIXED: Now properly handles company-specific paths like photoheight/company_space/*/models/attributes
 
 // Global storage for WebSocket messages  
 window.katapultWebSocketMessages = [];
@@ -11,7 +12,7 @@ window.katapultProcessedConnectionTypes = [];
 // Timer for delayed reconstruction
 let reconstructionTimer = null;
 
-console.log('[Cloneable Extension] Debug function available: window.debugNodeTypes()');
+console.log('[Cloneable Extension] WebSocket interceptor loading...');
 
 const originalWebSocket = window.WebSocket;
 window.WebSocket = function(url, protocols) {
@@ -109,161 +110,123 @@ function reconstructFullModel() {
   performReconstructionFinalization();
 }
 
-// DUMPER-STYLE RECONSTRUCTION - exactly like our working dumper scripts
+// Complete WebSocket message reconstruction - NO FRAGMENTS
 function performReconstructionFinalization() {
-  console.log('[Cloneable Extension] 📦 DUMPER-STYLE RECONSTRUCTION - processing ALL messages exactly like dumper...');
+  console.log('[Cloneable Extension] 🔧 Combining ALL WebSocket messages into complete JSON...');
   
   const messages = window.katapultWebSocketMessages || [];
-  console.log(`[Cloneable Extension] Processing ALL ${messages.length} WebSocket messages...`);
+  console.log(`[Cloneable Extension] Processing ${messages.length} WebSocket messages...`);
   
-  // EXACT DUMPER APPROACH: Store all messages first, then process
+  // Step 1: Combine ALL raw messages into one giant string
+  let combinedRaw = '';
+  messages.forEach((messageObj) => {
+    if (messageObj.raw) {
+      combinedRaw += messageObj.raw;
+    }
+  });
+  
+  console.log(`[Cloneable Extension] Combined ${combinedRaw.length} bytes of raw data`);
+  
+  // Step 2: Extract all complete JSON objects from the combined string
+  const jsonObjects = [];
   const dataByPath = {};
-  const parsedMessages = [];
+  let currentPos = 0;
   
-  // Process every single message like the dumper does
-  messages.forEach((messageObj, id) => {
-    const payload = messageObj.raw || messageObj;
+  while (currentPos < combinedRaw.length) {
+    // Find next JSON object start
+    const jsonStart = combinedRaw.indexOf('{"t":"', currentPos);
+    if (jsonStart === -1) break;
     
-    if (typeof payload !== 'string') return;
+    // Find matching closing brace
+    let depth = 0;
+    let jsonEnd = jsonStart;
+    let inString = false;
+    let escapeNext = false;
     
-    try {
-      // Try to parse each message as JSON (like dumper analyzeMessage)
-      const parsed = JSON.parse(payload);
+    for (let i = jsonStart; i < combinedRaw.length; i++) {
+      const char = combinedRaw[i];
       
-      // Store parsed message (like dumper)
-      parsedMessages.push({
-        id,
-        direction: 'RECEIVED',
-        timestamp: messageObj.timestamp || Date.now(),
-        type: detectMessageType(parsed),
-        raw: payload,
-        parsed
-      });
-      
-      // Extract path and data (like dumper extractPath and storeData)
-      let path = null;
-      let responseData = null;
-      
-      // Try various path locations (like dumper)
-      if (parsed.d?.b?.p) path = parsed.d.b.p;
-      if (parsed.d?.b?.b?.p) path = parsed.d.b.b.p; 
-      if (parsed.b?.p) path = parsed.b.p;
-      
-      // Extract response data
-      if (parsed.d?.b?.d) responseData = parsed.d.b.d;
-      if (parsed.d?.d) responseData = parsed.d.d;
-      if (parsed.b?.d) responseData = parsed.b.d;
-      
-      // Store data by path (like dumper storeData)
-      if (path && responseData) {
-        if (!dataByPath[path]) {
-          dataByPath[path] = {};
-        }
-        
-        if (typeof responseData === 'object') {
-          Object.assign(dataByPath[path], responseData);
-        } else {
-          dataByPath[path] = responseData;
-        }
-        
-        console.log(`[Cloneable Extension] 📝 Stored data for path: ${path} (${typeof responseData === 'object' ? Object.keys(responseData).length + ' keys' : 'primitive'})`);
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
       }
       
-    } catch (e) {
-      // Not JSON - store as unknown (like dumper)
-      parsedMessages.push({
-        id,
-        direction: 'RECEIVED', 
-        timestamp: messageObj.timestamp || Date.now(),
-        type: 'fragment_or_unknown',
-        raw: payload
-      });
-    }
-  });
-  
-  console.log(`[Cloneable Extension] 📊 Processed ${parsedMessages.length} messages into ${Object.keys(dataByPath).length} data paths`);
-  
-  // Extract attributes data (like dumper final processing)
-  let reconstructedAttributes = {};
-  
-  Object.entries(dataByPath).forEach(([path, data]) => {
-    if (path.includes('attributes') && path.includes('models')) {
-      console.log(`[Cloneable Extension] 🎯 Found attributes data at path: ${path}`);
-      console.log(`[Cloneable Extension] Attributes data keys:`, Object.keys(data));
-      Object.assign(reconstructedAttributes, data);
-    }
-  });
-  
-  // If no complete attributes found, try fragment reconstruction for /models/attributes
-  if (Object.keys(reconstructedAttributes).length === 0) {
-    console.log('[Cloneable Extension] 🔧 No complete /models/attributes found, attempting fragment reconstruction...');
-    
-    // Look for fragments containing /models/attributes
-    let attributesFragments = [];
-    let foundStart = false;
-    
-    for (let i = 0; i < messages.length; i++) {
-      const messageObj = messages[i];
-      const raw = messageObj.raw || messageObj;
-      
-      if (typeof raw !== 'string') continue;
-      
-      // Look for start of /models/attributes message
-      if (raw.includes('/models/attributes') && raw.includes('"d":{')) {
-        console.log(`[Cloneable Extension] 🎯 Found /models/attributes FRAGMENT START at message ${i}`);
-        foundStart = true;
-        attributesFragments.push(raw);
+      if (char === '\\') {
+        escapeNext = true;
+        continue;
       }
-      // Collect subsequent fragments if we found the start
-      else if (foundStart && attributesFragments.length < 20) {
-        const looksLikeAttributeFragment = raw.includes('attribute_types') || 
-                                         raw.includes('PCI_1') || 
-                                         raw.includes('poles_built') ||
-                                         raw.includes('node_type') ||
-                                         raw.includes('cable_type') ||
-                                         raw.includes('picklists') ||
-                                         raw.startsWith(':') || 
-                                         raw.startsWith(',') ||
-                                         (!raw.startsWith('{"t":"d"') && raw.length < 500);
-                                         
-        if (looksLikeAttributeFragment) {
-          console.log(`[Cloneable Extension] 📎 Adding attributes fragment ${attributesFragments.length + 1}: ${raw.substring(0, 50)}...`);
-          attributesFragments.push(raw);
-        } else if (raw.startsWith('{"t":"d"')) {
-          // Hit a new complete message, stop collecting
+      
+      if (char === '"' && !escapeNext) {
+        inString = !inString;
+      }
+      
+      if (!inString) {
+        if (char === '{') depth++;
+        if (char === '}') depth--;
+        
+        if (depth === 0 && i > jsonStart) {
+          jsonEnd = i + 1;
           break;
         }
       }
     }
     
-    // Try to reconstruct the complete /models/attributes message
-    if (attributesFragments.length > 1) {
-      console.log(`[Cloneable Extension] 🔨 Attempting fragment reconstruction from ${attributesFragments.length} fragments...`);
-      const reconstructed = attributesFragments.join('');
-      
+    if (jsonEnd > jsonStart) {
+      const jsonStr = combinedRaw.substring(jsonStart, jsonEnd);
       try {
-        const parsed = JSON.parse(reconstructed);
-        console.log('[Cloneable Extension] ✅ FRAGMENT RECONSTRUCTION SUCCESS!');
+        const parsed = JSON.parse(jsonStr);
+        jsonObjects.push(parsed);
         
-        if (parsed.d?.b?.d && parsed.d?.b?.p?.includes('attributes')) {
-          const attributesData = parsed.d.b.d;
-          console.log(`[Cloneable Extension] 🎉 Reconstructed /models/attributes with ${Object.keys(attributesData).length} keys!`);
-          console.log('[Cloneable Extension] Found keys:', Object.keys(attributesData));
-          
-          Object.assign(reconstructedAttributes, attributesData);
-          
-          if (attributesData.node_type) {
-            console.log('[Cloneable Extension] ✅ Found node_type with picklists:', Object.keys(attributesData.node_type.picklists || {}));
-          }
-          if (attributesData.cable_type) {
-            console.log('[Cloneable Extension] ✅ Found cable_type with picklists:', Object.keys(attributesData.cable_type.picklists || {}));
-          }
+        // Extract path and data
+        let path = null;
+        let responseData = null;
+        
+        if (parsed.d?.b?.p) path = parsed.d.b.p;
+        if (parsed.d?.b?.d) responseData = parsed.d.b.d;
+        
+        // Store data by path
+        if (path && responseData) {
+          dataByPath[path] = responseData;
+          console.log(`[Cloneable Extension] 📝 Stored data for path: ${path} (${typeof responseData === 'object' ? Object.keys(responseData).length + ' keys' : 'primitive'})`);
         }
+        
       } catch (e) {
-        console.log(`[Cloneable Extension] ❌ Fragment reconstruction failed: ${e.message}`);
-        console.log('Reconstructed preview:', reconstructed.substring(0, 200));
+        // Skip invalid JSON but log if it looks important
+        if (jsonStr.includes('attributes') || jsonStr.includes('node_type')) {
+          console.log('[Cloneable Extension] ⚠️ Failed to parse potential attributes JSON:', e.message);
+        }
       }
+      currentPos = jsonEnd;
+    } else {
+      currentPos = jsonStart + 1;
     }
+  }
+  
+  console.log(`[Cloneable Extension] Extracted ${jsonObjects.length} complete JSON objects from combined data`);
+  
+  // Extract attributes data from all paths
+  let reconstructedAttributes = {};
+  
+  Object.entries(dataByPath).forEach(([path, data]) => {
+    // Check for attributes at any path that contains /models/attributes
+    if (path.includes('/models/attributes')) {
+      console.log(`[Cloneable Extension] 🎯 Found attributes data at path: ${path}`);
+      console.log(`[Cloneable Extension] Attributes data keys:`, Object.keys(data).length, 'attributes');
+      Object.assign(reconstructedAttributes, data);
+    }
+  });
+  
+  // No more fragment detection - we already processed everything
+  if (Object.keys(reconstructedAttributes).length === 0) {
+    console.log('[Cloneable Extension] ⚠️ No /models/attributes found in any path');
+    console.log('[Cloneable Extension] Available paths:');
+    Object.keys(dataByPath).forEach(path => {
+      if (path.includes('attribute')) {
+        console.log(`[Cloneable Extension]   ✅ ${path}`);
+      } else {
+        console.log(`[Cloneable Extension]   - ${path}`);
+      }
+    });
   }
   
   // Store globally
@@ -277,7 +240,8 @@ function performReconstructionFinalization() {
   }
   
   console.log('[Cloneable Extension] 📊 FINAL RECONSTRUCTION SUMMARY:');
-  console.log(`  Parsed messages: ${parsedMessages.length}`);
+  console.log(`  Total messages processed: ${messages.length}`);
+  console.log(`  JSON objects extracted: ${jsonObjects.length}`);
   console.log(`  Data paths found: ${Object.keys(dataByPath).length}`);
   console.log(`  Reconstructed attributes keys: ${Object.keys(reconstructedAttributes).length}`);
   console.log(`  Node types processed: ${window.katapultProcessedNodeTypes ? window.katapultProcessedNodeTypes.length : 0}`);
@@ -414,8 +378,11 @@ function processAttributesData(attributesData) {
     }
     
     if (attrData && typeof attrData === 'object') {
-      // Check if this attribute has picklists
-      if (attrData.picklists && Object.keys(attrData.picklists).length > 0) {
+      // Check if this is a boolean attribute first (checkbox GUI element)
+      const isBoolean = attrData.gui_element === 'checkbox';
+      
+      // Check if this attribute has picklists (but not if it's a boolean)
+      if (attrData.picklists && Object.keys(attrData.picklists).length > 0 && !isBoolean) {
         // This is a picklist attribute - process like node_type/cable_type
         const categories = Object.keys(attrData.picklists);
         const values = {};
@@ -456,7 +423,7 @@ function processAttributesData(attributesData) {
         window.katapultProcessedAttributes.withoutPicklists.push({
           name: attrName,
           displayName: attrName.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' '),
-          dataType: 'text', // simplified for now
+          dataType: isBoolean ? 'boolean' : 'text', // Use boolean for checkbox elements
           required: attrData.required || false,
           attribute_types: attrData.attribute_types || {}
         });
@@ -590,6 +557,18 @@ window.addEventListener('message', function(event) {
   if (event.data && event.data.type === 'cloneable-trigger-reconstruction') {
     console.log('[Cloneable Extension] 🚀 Received immediate reconstruction trigger from content script');
     performReconstructionFinalization();
+  } else if (event.data && event.data.type === 'cloneable-get-websocket-data-dump') {
+    console.log('[Cloneable Extension] 📨 Received WebSocket data dump request from content script');
+    
+    // Send the WebSocket messages back to content script
+    window.postMessage({
+      type: 'cloneable-websocket-data-response',
+      messages: window.katapultWebSocketMessages || [],
+      messageCount: (window.katapultWebSocketMessages || []).length,
+      timestamp: new Date().toISOString()
+    }, '*');
+    
+    console.log(`[Cloneable Extension] 📤 Sent ${(window.katapultWebSocketMessages || []).length} WebSocket messages to content script`);
   }
 });
 

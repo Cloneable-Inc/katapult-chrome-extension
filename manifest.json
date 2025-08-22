@@ -1,13 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Katapult to Cloneable Exporter",
-  "version": "1.0",
+  "version": "1.2",
   "description": "Export models from Katapult Pro to Cloneable",
   "permissions": [
     "activeTab",
-    "webRequest",
-    "storage",
-    "tabs"
+    "webRequest"
   ],
   "host_permissions": [
     "https://katapultpro.com/*",
@@ -27,7 +25,8 @@
         "inject.js", 
         "inject-reconstructor.js", 
         "import-interface-content.js",
-        "import-interface.css"
+        "import-interface.css",
+        "fallback-data.js"
       ],
       "matches": ["https://katapultpro.com/*", "https://*.katapultpro.com/*"]
     }

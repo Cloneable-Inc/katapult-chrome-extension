@@ -622,6 +622,66 @@
   color: white;
 }
 
+/* Data Type Specific Styling */
+.attribute-type-badge.type-boolean {
+  background: rgba(34, 197, 94, 0.15);
+  color: #16a34a;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.attribute-type-badge.type-number {
+  background: rgba(59, 130, 246, 0.15);
+  color: #2563eb;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.attribute-type-badge.type-date {
+  background: rgba(168, 85, 247, 0.15);
+  color: #7c3aed;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.attribute-type-badge.type-location {
+  background: rgba(249, 115, 22, 0.15);
+  color: #ea580c;
+  border: 1px solid rgba(249, 115, 22, 0.3);
+  font-weight: 600;
+}
+
+.attribute-type-badge.type-picklist {
+  background: rgba(14, 165, 233, 0.15);
+  color: #0284c7;
+  border: 1px solid rgba(14, 165, 233, 0.3);
+}
+
+.attribute-type-badge.type-text {
+  background: rgba(107, 114, 128, 0.15);
+  color: #4b5563;
+  border: 1px solid rgba(107, 114, 128, 0.3);
+}
+
+/* Special types - grayed out */
+.attribute-type-badge.type-special {
+  background: rgba(156, 163, 175, 0.1);
+  color: #9ca3af;
+  border: 1px solid rgba(156, 163, 175, 0.2);
+  opacity: 0.6;
+}
+
+.attribute-option .type-disabled {
+  opacity: 0.5;
+}
+
+.attribute-option.type-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.attribute-option.type-disabled .attribute-card {
+  background: #f9fafb;
+  color: #9ca3af;
+}
+
 .picklist-preview {
   display: flex;
   flex-wrap: wrap;

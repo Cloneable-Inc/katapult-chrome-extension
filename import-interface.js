@@ -209,7 +209,7 @@ class ImportInterface {
               <input type="radio" name="environment" value="production" checked>
               <span>Production (app.cloneable.ai)</span>
             </label>
-            <label id="dev-environment-label" style="display: none;">
+            <label id="dev-environment-label">
               <input type="radio" name="environment" value="development">
               <span>Development (localhost:3000)</span>
             </label>

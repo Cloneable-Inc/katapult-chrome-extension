@@ -29,6 +29,29 @@
       background-color: #e8f5e9;
       color: #2e7d32;
     }
+    .debug-section {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid #e0e0e0;
+    }
+    .debug-btn {
+      background: #f44336;
+      color: white;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      margin-top: 8px;
+      width: 100%;
+    }
+    .debug-btn:hover {
+      background: #d32f2f;
+    }
+    .debug-btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
@@ -37,6 +60,16 @@
   <div class="status" id="status">
     Extension is ready
   </div>
+  
+  <div class="debug-section">
+    <button class="debug-btn" id="dump-websocket-btn" disabled>
+      🔍 Download Raw WebSocket Data
+    </button>
+    <div style="font-size: 11px; color: #666; margin-top: 4px;">
+      Debug: Export all captured WebSocket messages
+    </div>
+  </div>
+  
   <script src="popup.js"></script>
 </body>
 </html>

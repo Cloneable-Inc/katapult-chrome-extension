@@ -1,0 +1,13 @@
+{
+  "name": "websocket-debugger",
+  "version": "1.0.0",
+  "description": "WebSocket debugging tool for Katapult extension",
+  "main": "websocket_debugger.js",
+  "scripts": {
+    "debug": "node websocket_debugger.js",
+    "test-extension": "node test_with_extension.js"
+  },
+  "dependencies": {
+    "playwright": "^1.40.0"
+  }
+}

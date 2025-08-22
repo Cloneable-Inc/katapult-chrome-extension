@@ -1,0 +1,4 @@
+2025/08/22-08:28:21.354 199630 Reusing MANIFEST /Users/tyler/Documents/development/cloneable_chrome_extension/debug_websocket_parsing/session_data_extension/Default/IndexedDB/https_katapultpro.com_0.indexeddb.leveldb/MANIFEST-000001
+2025/08/22-08:28:21.354 199630 Recovering log #7
+2025/08/22-08:28:21.354 199630 Reusing old log /Users/tyler/Documents/development/cloneable_chrome_extension/debug_websocket_parsing/session_data_extension/Default/IndexedDB/https_katapultpro.com_0.indexeddb.leveldb/000007.log 
+2025/08/22-08:28:21.671 19963d Manual compaction at level-0 from '\x00\x08\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x09\x00\x00\x00' @ 0 : 0; will stop at (end)
