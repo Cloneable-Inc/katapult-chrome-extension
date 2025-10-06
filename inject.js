@@ -225,6 +225,7 @@ function performReconstructionFinalization() {
     attributes: reconstructedAttributes,
     processedAttributes: window.katapultProcessedAttributes || { withPicklists: [], withoutPicklists: [] },
     imageClassifications: window.katapultProcessedImageClassifications || [],
+    nestedAttributeStructures: window.katapultNestedAttributeStructures || {},
     modelData: dataByPath,
     nodeTypesCount: window.katapultProcessedNodeTypes ? window.katapultProcessedNodeTypes.length : 0,
     connectionTypesCount: window.katapultProcessedConnectionTypes ? window.katapultProcessedConnectionTypes.length : 0,
@@ -413,7 +414,18 @@ function processAttributesData(attributesData) {
   }
   
   if (inputModelsData && typeof inputModelsData === 'object') {
-    
+
+    // Extract nested attribute structures from input_models
+    window.katapultNestedAttributeStructures = {};
+    Object.entries(inputModelsData).forEach(([key, modelData]) => {
+      if (modelData && typeof modelData === 'object' && modelData._attributes) {
+        window.katapultNestedAttributeStructures[key] = {
+          nestedFields: modelData._attributes,
+          elementType: modelData.element_type
+        };
+      }
+    });
+
     Object.entries(inputModelsData).forEach(([key, modelData]) => {
       if (modelData && typeof modelData === 'object') {
         // Only include items with element_type of 'chip' - these are the actual image classifications

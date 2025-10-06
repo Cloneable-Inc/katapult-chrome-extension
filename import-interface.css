@@ -654,10 +654,36 @@
   border: 1px solid rgba(14, 165, 233, 0.3);
 }
 
+.attribute-type-badge.type-nested {
+  background: rgba(99, 102, 241, 0.15);
+  color: #4f46e5;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  font-weight: 600;
+}
+
 .attribute-type-badge.type-text {
   background: rgba(107, 114, 128, 0.15);
   color: #4b5563;
   border: 1px solid rgba(107, 114, 128, 0.3);
+}
+
+/* Nested fields display */
+.nested-fields-list {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: rgba(148, 163, 184, 0.08);
+  border-left: 3px solid rgba(99, 102, 241, 0.3);
+  border-radius: 4px;
+  line-height: 1.6;
+  font-weight: 500;
+}
+
+.attribute-option.selected .nested-fields-list {
+  background: rgba(255, 255, 255, 0.15);
+  border-left-color: rgba(255, 255, 255, 0.4);
+  color: rgba(255, 255, 255, 0.9);
 }
 
 /* Special types - grayed out */

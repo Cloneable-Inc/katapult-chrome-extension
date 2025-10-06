@@ -16,10 +16,11 @@ class ImportInterface {
     this.imageAttachments = {};
     this.availableAttributes = null;
     this.photoClassifications = []; // Initialize as empty array instead of null
-    
+    this.nestedAttributeStructures = {}; // Store nested attribute structures from input_models
+
     // Set global reference immediately
     window.importInterface = this;
-    
+
     this.init();
   }
 
@@ -194,6 +195,11 @@ class ImportInterface {
       this.refreshUIWithNewData();
     }
     
+    // Load nested attribute structures if available
+    if (window.contentScriptNestedStructures) {
+      this.nestedAttributeStructures = window.contentScriptNestedStructures;
+    }
+
     // Use the reconstructed attributes for the general attributes list
     if (window.contentScriptAttributes && Object.keys(window.contentScriptAttributes).length > 0) {
 
@@ -351,7 +357,7 @@ class ImportInterface {
             });
           }
           
-          this.availableAttributes.withPicklists.push({
+          const attrObj = {
             name: attrName,
             displayName: this.formatDisplayName(attrName),
             dataType: 'picklist',
@@ -359,7 +365,15 @@ class ImportInterface {
             appliesTo: appliesTo.length > 0 ? appliesTo : this.determineAppliesTo(attrName),
             categories: categories,
             values: values
-          });
+          };
+
+          // Add nested structure if available
+          if (this.nestedAttributeStructures && this.nestedAttributeStructures[attrName]) {
+            attrObj.nestedFields = this.nestedAttributeStructures[attrName].nestedFields;
+            attrObj.isCompound = true;
+          }
+
+          this.availableAttributes.withPicklists.push(attrObj);
           
 
         } else {
@@ -374,13 +388,21 @@ class ImportInterface {
             });
           }
           
-          this.availableAttributes.withoutPicklists.push({
+          const attrObj = {
             name: attrName,
             displayName: this.formatDisplayName(attrName),
             dataType: this.getCorrectAttributeType(attrName, attrData),
             required: attrData.required || false,
             appliesTo: appliesTo.length > 0 ? appliesTo : this.determineAppliesTo(attrName)
-          });
+          };
+
+          // Add nested structure if available
+          if (this.nestedAttributeStructures && this.nestedAttributeStructures[attrName]) {
+            attrObj.nestedFields = this.nestedAttributeStructures[attrName].nestedFields;
+            attrObj.isCompound = true;
+          }
+
+          this.availableAttributes.withoutPicklists.push(attrObj);
           
 
         }
@@ -587,17 +609,34 @@ class ImportInterface {
   // CORRECTED attribute type detection based on Firebase analysis
   getCorrectAttributeType(attributeName, attributeDefinition) {
     const guiElement = attributeDefinition?.gui_element;
-    const hasPicklists = attributeDefinition?.picklists && 
+
+    // Define standard supported types
+    const standardTypes = [
+      'textbox', 'textarea', 'dropdown', 'checkbox', 'date',
+      'calibrated-width', 'calibrated-height', 'coordinate_capture'
+    ];
+
+    // Check for nested structure - but ONLY use it for special/unsupported types
+    if (this.nestedAttributeStructures && this.nestedAttributeStructures[attributeName]) {
+      if (standardTypes.includes(guiElement)) {
+        // Standard type - ignore nesting, fall through to normal handling
+      } else {
+        // Special type (pole_tag, group, timer) - use nested/json
+        return 'json';
+      }
+    }
+
+    const hasPicklists = attributeDefinition?.picklists &&
                         Object.keys(attributeDefinition.picklists).length > 0;
-    const hasNumericConstraints = attributeDefinition?.min !== undefined || 
-                                 attributeDefinition?.max !== undefined || 
+    const hasNumericConstraints = attributeDefinition?.min !== undefined ||
+                                 attributeDefinition?.max !== undefined ||
                                  attributeDefinition?.step !== undefined ||
                                  attributeDefinition?.format === 'feet-inches';
-    
+
     // Check for numeric attributes that use textbox but should be numbers
     const measurementNames = [
-      'anc_elevation', 'google_elevation', 'height', 'lasered_cable_height', 
-      'lasered_ground_height', 'manual_height', 'measured_elevation', 
+      'anc_elevation', 'google_elevation', 'height', 'lasered_cable_height',
+      'lasered_ground_height', 'manual_height', 'measured_elevation',
       'measured_groundline_circumference', 'measured_pole_height'
     ];
     
@@ -658,16 +697,17 @@ class ImportInterface {
     const typeMap = {
       'picklist': 'picklist',
       'boolean': 'boolean',
-      'number': 'number', 
+      'number': 'number',
       'date': 'date',
       'textarea': 'text',
       'text': 'text',
       'coordinate': 'location', // Display coordinate_capture as "location"
       'timer': 'timer',
       'pole_tag': 'tag',
-      'group': 'group'
+      'group': 'group',
+      'json': 'nested' // Display json types as "nested"
     };
-    
+
     return typeMap[dataType] || dataType || 'text';
   }
 
@@ -684,6 +724,8 @@ class ImportInterface {
         return 'type-location'; // Special styling for location
       case 'picklist':
         return 'type-picklist';
+      case 'json':
+        return 'type-nested'; // Normal styling for nested/json types
       case 'timer':
       case 'pole_tag':
       case 'group':
@@ -695,6 +737,9 @@ class ImportInterface {
 
   // Helper method to check if a data type is special and should be disabled (except coordinate)
   isSpecialType(dataType) {
+    // JSON/nested types are NOT special - they're fully supported
+    if (dataType === 'json') return false;
+    // Other special types remain disabled
     return ['timer', 'pole_tag', 'group'].includes(dataType);
   }
 
@@ -710,10 +755,26 @@ class ImportInterface {
       'textarea': 'string',
       'timer': 'number', // Time values can be numbers
       'pole_tag': 'string', // Tags are strings
-      'group': 'object' // Groups might be objects
+      'group': 'object', // Groups might be objects
+      'json': 'json' // JSON types export as json
     };
     
     return cloneableTypeMap[dataType] || 'string';
+  }
+
+  // Helper method to format nested fields for display
+  formatNestedFieldsDisplay(attrName) {
+    const nested = this.nestedAttributeStructures && this.nestedAttributeStructures[attrName];
+    if (!nested || !nested.nestedFields) return '';
+
+    const fields = Object.entries(nested.nestedFields).map(([name, def]) => {
+      const type = def._gui_element || 'text';
+      // Capitalize first letter of name
+      const displayName = name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      return `<span style="display: inline-block; margin-right: 12px;">• ${displayName} <span style="opacity: 0.7;">(${type})</span></span>`;
+    });
+
+    return fields.join('');
   }
 
   // Helper methods for export summary
@@ -980,7 +1041,7 @@ class ImportInterface {
               <button class="btn-secondary" id="dump-raw-websocket-btn" title="Download raw WebSocket messages for debugging" style="display: none;">
                 🔍 Dump Raw Messages
               </button>
-              <button class="btn-secondary" id="dump-complete-firebase-btn" title="Download complete Firebase JSON data">
+              <button class="btn-secondary" id="dump-complete-firebase-btn" title="Download complete Firebase JSON data" style="display: none;">
                 🔥 Complete Firebase JSON
               </button>
               <button class="btn-primary" id="configure-attributes-btn" disabled>
@@ -2030,11 +2091,12 @@ class ImportInterface {
     filteredAttributes.forEach(attr => {
       const isChecked = this.isAttributeSelected(entityId, attr.name);
       const hasPicklist = attr.values && Object.keys(attr.values).length > 0;
-      
+      const nestedDisplay = (attr.nestedFields && attr.dataType === 'json') ? this.formatNestedFieldsDisplay(attr.name) : '';
+
       html += `
         <label class="attribute-option ${isChecked ? 'selected' : ''} ${this.isSpecialType(attr.dataType) ? 'type-disabled' : ''}">
-          <input type="checkbox" 
-                 value="${attr.name}" 
+          <input type="checkbox"
+                 value="${attr.name}"
                  data-entity="${entityId}"
                  data-entity-type="${entityType}"
                  data-type="${hasPicklist ? 'picklist' : 'freeform'}"
@@ -2044,6 +2106,7 @@ class ImportInterface {
               <span class="attribute-name">${attr.displayName}</span>
               <span class="attribute-type-badge ${this.getTypeStyleClass(attr.dataType)}">${this.getDisplayDataType(attr.dataType)}</span>
             </div>
+            ${nestedDisplay ? `<div class="nested-fields-list">${nestedDisplay}</div>` : ''}
             ${hasPicklist ? this.renderPicklistPreview(attr) : ''}
           </div>
         </label>
@@ -2076,10 +2139,12 @@ class ImportInterface {
     
     filteredAttributes.forEach(attr => {
       const isChecked = this.isAttributeSelected(entityId, attr.name);
+      const nestedDisplay = (attr.nestedFields && attr.dataType === 'json') ? this.formatNestedFieldsDisplay(attr.name) : '';
+
       html += `
         <label class="attribute-option ${isChecked ? 'selected' : ''} ${this.isSpecialType(attr.dataType) ? 'type-disabled' : ''}">
-          <input type="checkbox" 
-                 value="${attr.name}" 
+          <input type="checkbox"
+                 value="${attr.name}"
                  data-entity="${entityId}"
                  data-entity-type="${entityType}"
                  data-type="${type}"
@@ -2089,6 +2154,7 @@ class ImportInterface {
               <span class="attribute-name">${attr.displayName}</span>
               <span class="attribute-type-badge ${this.getTypeStyleClass(attr.dataType)}">${this.getDisplayDataType(attr.dataType)}</span>
             </div>
+            ${nestedDisplay ? `<div class="nested-fields-list">${nestedDisplay}</div>` : ''}
             ${type === 'picklist' ? this.renderPicklistPreview(attr) : ''}
           </div>
         </label>
@@ -2698,7 +2764,7 @@ class ImportInterface {
       // Check in free-form attributes
       const freeformAttr = this.availableAttributes.withoutPicklists.find(a => a.name === attrName);
       if (freeformAttr) {
-        return {
+        const metadata = {
           name: {
             name: attrName,
             type: 'freeform'
@@ -2708,6 +2774,19 @@ class ImportInterface {
           cloneableDataType: this.getCloneableDataType(freeformAttr.dataType), // Enhanced for Cloneable
           isSpecialType: this.isSpecialType(freeformAttr.dataType)
         };
+
+        // Include nested field structure ONLY if dataType is json
+        if (freeformAttr.nestedFields && freeformAttr.dataType === 'json') {
+          metadata.nestedFields = {};
+          Object.entries(freeformAttr.nestedFields).forEach(([fieldName, fieldDef]) => {
+            metadata.nestedFields[fieldName] = {
+              type: fieldDef._gui_element || 'text',
+              definition: fieldDef
+            };
+          });
+        }
+
+        return metadata;
       }
       
       // Fallback if not found
@@ -3541,13 +3620,14 @@ window.addEventListener('message', (event) => {
   
   // Listen for data update notifications from inject script
   if (event.data && event.data.type === 'cloneable-data-updated') {
-    
+
     // Store the received data in content script context
     window.contentScriptNodeTypes = event.data.nodeTypes || [];
     window.contentScriptConnectionTypes = event.data.connectionTypes || [];
     window.contentScriptAttributes = event.data.attributes || {};
     window.contentScriptModelData = event.data.modelData || {};
     window.contentScriptImageClassifications = event.data.imageClassifications || [];
+    window.contentScriptNestedStructures = event.data.nestedAttributeStructures || {};
     
     // Also store in the location that updateButtonStatus checks
     if (event.data.nodeTypes && event.data.nodeTypes.length > 0) {
@@ -3557,16 +3637,21 @@ window.addEventListener('message', (event) => {
 
 
     
+    // Store nested structures in importInterface
+    if (window.importInterface && event.data.nestedAttributeStructures) {
+      window.importInterface.nestedAttributeStructures = event.data.nestedAttributeStructures;
+    }
+
     // Use processed attributes if available, otherwise process raw attributes
     if (window.importInterface && event.data.processedAttributes) {
-      
+
       // Directly use the processed attributes instead of processing raw data
       window.importInterface.availableAttributes.withPicklists = event.data.processedAttributes.withPicklists || [];
       window.importInterface.availableAttributes.withoutPicklists = event.data.processedAttributes.withoutPicklists || [];
-      
+
       // Ensure no duplicates from processed data
       window.importInterface.deduplicateAttributes();
-      
+
 
     } else if (window.importInterface && Object.keys(event.data.attributes || {}).length > 0) {
 
