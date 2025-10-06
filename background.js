@@ -10,7 +10,6 @@ chrome.webRequest.onCompleted.addListener(
          details.url.includes('/model') || 
          details.url.includes('.json'))) {
       
-      console.log('Potential model API call:', details.url);
       
       // Store the URL pattern for later reference
       if (chrome.storage) {

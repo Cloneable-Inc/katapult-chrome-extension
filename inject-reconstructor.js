@@ -134,4 +134,3 @@ window.reconstructWebSocketData = function() {
   return null;
 };
 
-console.log('[Cloneable Extension] Reconstructor loaded');

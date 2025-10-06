@@ -141,7 +141,7 @@ class ImportInterface {
   }
 
   createImportModal() {
-    console.log('[ImportInterface] Creating modal...');
+
     const modal = document.createElement('div');
     modal.id = 'import-modal';
     modal.className = 'import-modal';
@@ -646,7 +646,7 @@ class ImportInterface {
       data: data
     }, (response) => {
       if (response && response.success) {
-        console.log('[Cloneable Extension] Successfully opened tab with data, tabId:', response.tabId);
+
         
         // Close the modal
         const modal = document.getElementById('import-modal');
@@ -654,7 +654,7 @@ class ImportInterface {
           modal.remove();
         }
       } else {
-        console.error('[Cloneable Extension] Failed to open tab with data');
+
         alert('Failed to export data. Please try again.');
       }
     });
@@ -685,5 +685,5 @@ class ImportInterface {
   }
   
   // Log for debugging
-  console.log('[ImportInterface] Initialized and exposed to window:', !!window.importInterface);
+
 })();
