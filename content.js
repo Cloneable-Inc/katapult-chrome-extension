@@ -742,8 +742,8 @@ class ImportInterface {
   isSpecialType(dataType) {
     // JSON/nested types are NOT special - they're fully supported
     if (dataType === 'json') return false;
-    // Other special types remain disabled
-    return ['timer', 'pole_tag', 'group'].includes(dataType);
+    // Other special types remain disabled (timer, pole_tag should never appear as they convert to json)
+    return ['timer'].includes(dataType);
   }
 
   // Helper method to get Cloneable-compatible data types
@@ -770,11 +770,27 @@ class ImportInterface {
     const nested = this.nestedAttributeStructures && this.nestedAttributeStructures[attrName];
     if (!nested || !nested.nestedFields) return '';
 
+    // Check if parent attribute is a "group" type with group_items
+    const parentAttrDef = this.attributeDefinitions ? this.attributeDefinitions[attrName] : null;
+    const isGroupType = parentAttrDef && parentAttrDef.gui_element === 'group' && parentAttrDef.group_items;
+
     const fields = Object.entries(nested.nestedFields).map(([name, def]) => {
-      const type = def._gui_element || 'text';
+      let actualGuiElement = def._gui_element || 'text';
+
+      // For group types, map nested field to actual attribute definition
+      if (isGroupType) {
+        const groupItems = Object.values(parentAttrDef.group_items);
+        const referencedAttrName = groupItems.find(item => item.includes(name));
+
+        if (referencedAttrName && this.attributeDefinitions[referencedAttrName]) {
+          const referencedAttr = this.attributeDefinitions[referencedAttrName];
+          actualGuiElement = referencedAttr.gui_element || actualGuiElement;
+        }
+      }
+
       // Capitalize first letter of name
       const displayName = name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-      return `<span style="display: inline-block; margin-right: 12px;">• ${displayName} <span style="opacity: 0.7;">(${type})</span></span>`;
+      return `<span style="display: inline-block; margin-right: 12px;">• ${displayName} <span style="opacity: 0.7;">(${actualGuiElement})</span></span>`;
     });
 
     return fields.join('');
@@ -2781,19 +2797,51 @@ class ImportInterface {
         // Include nested field structure ONLY if dataType is json
         if (freeformAttr.nestedFields && freeformAttr.dataType === 'json') {
           metadata.nestedFields = {};
+
+          // Check if parent attribute is a "group" type with group_items
+          const parentAttrDef = this.attributeDefinitions ? this.attributeDefinitions[attrName] : null;
+          const isGroupType = parentAttrDef && parentAttrDef.gui_element === 'group' && parentAttrDef.group_items;
+
           Object.entries(freeformAttr.nestedFields).forEach(([fieldName, fieldDef]) => {
+            let actualFieldDef = fieldDef;
+            let actualGuiElement = fieldDef._gui_element || 'text';
+
+            // For group types, map nested field to actual attribute definition
+            if (isGroupType) {
+              const groupItems = Object.values(parentAttrDef.group_items);
+              const referencedAttrName = groupItems.find(item => item.includes(fieldName));
+
+              if (referencedAttrName && this.attributeDefinitions[referencedAttrName]) {
+                const referencedAttr = this.attributeDefinitions[referencedAttrName];
+                actualGuiElement = referencedAttr.gui_element || actualGuiElement;
+                actualFieldDef = referencedAttr;
+              }
+            }
+
             const fieldMetadata = {
-              type: fieldDef._gui_element || 'text',
+              type: actualGuiElement,
               definition: fieldDef
             };
 
             // If it's a dropdown, resolve and include picklist options
-            if (fieldDef._gui_element === 'dropdown') {
-              if (fieldDef.referenced_picklist && this.attributeDefinitions) {
-                // Look up the referenced picklist
+            if (actualGuiElement === 'dropdown') {
+              // For group types, use the referenced attribute's picklists
+              if (isGroupType && actualFieldDef.picklists) {
+                const picklistOptions = {};
+                Object.keys(actualFieldDef.picklists).forEach(category => {
+                  const categoryData = actualFieldDef.picklists[category];
+                  if (categoryData && typeof categoryData === 'object') {
+                    picklistOptions[category] = Object.values(categoryData).map(item =>
+                      typeof item === 'object' ? (item.value || item.name || String(item)) : String(item)
+                    );
+                  }
+                });
+                fieldMetadata.picklistOptions = picklistOptions;
+              }
+              // For non-group types with referenced_picklist
+              else if (fieldDef.referenced_picklist && this.attributeDefinitions) {
                 const referencedAttr = this.attributeDefinitions[fieldDef.referenced_picklist];
                 if (referencedAttr && referencedAttr.picklists) {
-                  // Convert picklists to the same format as top-level picklists
                   const picklistOptions = {};
                   Object.keys(referencedAttr.picklists).forEach(category => {
                     const categoryData = referencedAttr.picklists[category];
@@ -2805,8 +2853,9 @@ class ImportInterface {
                   });
                   fieldMetadata.picklistOptions = picklistOptions;
                 }
-              } else if (fieldDef.picklist) {
-                // Use inline picklist
+              }
+              // For inline picklists
+              else if (fieldDef.picklist) {
                 const picklistOptions = {
                   untitled: Object.values(fieldDef.picklist).map(item => String(item))
                 };
