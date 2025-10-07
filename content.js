@@ -17,6 +17,7 @@ class ImportInterface {
     this.availableAttributes = null;
     this.photoClassifications = []; // Initialize as empty array instead of null
     this.nestedAttributeStructures = {}; // Store nested attribute structures from input_models
+    this.attributeDefinitions = null; // Store raw attribute definitions for picklist lookup
 
     // Set global reference immediately
     window.importInterface = this;
@@ -202,10 +203,12 @@ class ImportInterface {
 
     // Use the reconstructed attributes for the general attributes list
     if (window.contentScriptAttributes && Object.keys(window.contentScriptAttributes).length > 0) {
-
+      // Store raw attribute definitions for picklist lookups
+      this.attributeDefinitions = window.contentScriptAttributes;
       this.processAttributeDefinitions(window.contentScriptAttributes);
     } else if (window.katapultReconstructedAttributes) {
-
+      // Store raw attribute definitions for picklist lookups
+      this.attributeDefinitions = window.katapultReconstructedAttributes;
       this.processAttributeDefinitions(window.katapultReconstructedAttributes);
     }
     
@@ -2779,10 +2782,39 @@ class ImportInterface {
         if (freeformAttr.nestedFields && freeformAttr.dataType === 'json') {
           metadata.nestedFields = {};
           Object.entries(freeformAttr.nestedFields).forEach(([fieldName, fieldDef]) => {
-            metadata.nestedFields[fieldName] = {
+            const fieldMetadata = {
               type: fieldDef._gui_element || 'text',
               definition: fieldDef
             };
+
+            // If it's a dropdown, resolve and include picklist options
+            if (fieldDef._gui_element === 'dropdown') {
+              if (fieldDef.referenced_picklist && this.attributeDefinitions) {
+                // Look up the referenced picklist
+                const referencedAttr = this.attributeDefinitions[fieldDef.referenced_picklist];
+                if (referencedAttr && referencedAttr.picklists) {
+                  // Convert picklists to the same format as top-level picklists
+                  const picklistOptions = {};
+                  Object.keys(referencedAttr.picklists).forEach(category => {
+                    const categoryData = referencedAttr.picklists[category];
+                    if (categoryData && typeof categoryData === 'object') {
+                      picklistOptions[category] = Object.values(categoryData).map(item =>
+                        typeof item === 'object' ? (item.value || item.name || String(item)) : String(item)
+                      );
+                    }
+                  });
+                  fieldMetadata.picklistOptions = picklistOptions;
+                }
+              } else if (fieldDef.picklist) {
+                // Use inline picklist
+                const picklistOptions = {
+                  untitled: Object.values(fieldDef.picklist).map(item => String(item))
+                };
+                fieldMetadata.picklistOptions = picklistOptions;
+              }
+            }
+
+            metadata.nestedFields[fieldName] = fieldMetadata;
           });
         }
 
