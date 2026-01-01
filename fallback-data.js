@@ -35,5 +35,3 @@ window.fallbackNodeTypes = [
   { category: 'underground', type: 'marker' },
   { category: 'underground', type: 'transformer' }
 ];
-
-console.log('[Cloneable Extension] Fallback data loaded with', window.fallbackNodeTypes.length, 'node types');

@@ -12,11 +12,8 @@ window.katapultProcessedConnectionTypes = [];
 // Timer for delayed reconstruction
 let reconstructionTimer = null;
 
-console.log('[Cloneable Extension] WebSocket interceptor loading...');
-
 const originalWebSocket = window.WebSocket;
 window.WebSocket = function(url, protocols) {
-  console.log('[Cloneable Extension] WebSocket created:', url);
   
   const ws = new originalWebSocket(url, protocols);
   
@@ -49,7 +46,6 @@ window.WebSocket = function(url, protocols) {
     }
     reconstructionTimer = setTimeout(() => {
       if (window.katapultWebSocketMessages.length > 0) {
-        console.log('[Cloneable Extension] Triggering delayed reconstruction with', window.katapultWebSocketMessages.length, 'messages');
         reconstructFullModel();
       }
     }, 3000); // Wait 3 seconds after last message
@@ -65,8 +61,6 @@ window.WebSocket = function(url, protocols) {
         const data = parsed.d.b.d;
         
         if (path.includes('models/attributes')) {
-          console.log(`[Cloneable Extension] 🎯 IMMEDIATE attributes found at ${path}!`);
-          console.log(`[Cloneable Extension] Keys:`, Object.keys(data));
           
           window.katapultReconstructedAttributes = data;
           window.katapultModelAttributesData = data;
@@ -76,7 +70,6 @@ window.WebSocket = function(url, protocols) {
       
     } catch (e) {
       // Fragment - will be handled by dumper-style reconstruction
-      console.log(`[Cloneable Extension] 📦 Fragment stored for dumper-style reconstruction`);
     }
     
     // Call original handler if it exists
@@ -88,7 +81,6 @@ window.WebSocket = function(url, protocols) {
   // Intercept send
   const originalSend = ws.send;
   ws.send = function(data) {
-    console.log('[Cloneable Extension] WebSocket send:', data);
     return originalSend.call(this, data);
   };
   
@@ -103,8 +95,6 @@ for (const key in originalWebSocket) {
   }
 }
 
-console.log('[Cloneable Extension] WebSocket interceptor installed');
-
 // Alias for reconstruction function
 function reconstructFullModel() {
   performReconstructionFinalization();
@@ -112,10 +102,8 @@ function reconstructFullModel() {
 
 // Complete WebSocket message reconstruction - NO FRAGMENTS
 function performReconstructionFinalization() {
-  console.log('[Cloneable Extension] 🔧 Combining ALL WebSocket messages into complete JSON...');
   
   const messages = window.katapultWebSocketMessages || [];
-  console.log(`[Cloneable Extension] Processing ${messages.length} WebSocket messages...`);
   
   // Step 1: Combine ALL raw messages into one giant string
   let combinedRaw = '';
@@ -125,7 +113,6 @@ function performReconstructionFinalization() {
     }
   });
   
-  console.log(`[Cloneable Extension] Combined ${combinedRaw.length} bytes of raw data`);
   
   // Step 2: Extract all complete JSON objects from the combined string
   const jsonObjects = [];
@@ -187,13 +174,11 @@ function performReconstructionFinalization() {
         // Store data by path
         if (path && responseData) {
           dataByPath[path] = responseData;
-          console.log(`[Cloneable Extension] 📝 Stored data for path: ${path} (${typeof responseData === 'object' ? Object.keys(responseData).length + ' keys' : 'primitive'})`);
         }
         
       } catch (e) {
         // Skip invalid JSON but log if it looks important
         if (jsonStr.includes('attributes') || jsonStr.includes('node_type')) {
-          console.log('[Cloneable Extension] ⚠️ Failed to parse potential attributes JSON:', e.message);
         }
       }
       currentPos = jsonEnd;
@@ -202,7 +187,6 @@ function performReconstructionFinalization() {
     }
   }
   
-  console.log(`[Cloneable Extension] Extracted ${jsonObjects.length} complete JSON objects from combined data`);
   
   // Extract attributes data from all paths
   let reconstructedAttributes = {};
@@ -210,21 +194,15 @@ function performReconstructionFinalization() {
   Object.entries(dataByPath).forEach(([path, data]) => {
     // Check for attributes at any path that contains /models/attributes
     if (path.includes('/models/attributes')) {
-      console.log(`[Cloneable Extension] 🎯 Found attributes data at path: ${path}`);
-      console.log(`[Cloneable Extension] Attributes data keys:`, Object.keys(data).length, 'attributes');
       Object.assign(reconstructedAttributes, data);
     }
   });
   
   // No more fragment detection - we already processed everything
   if (Object.keys(reconstructedAttributes).length === 0) {
-    console.log('[Cloneable Extension] ⚠️ No /models/attributes found in any path');
-    console.log('[Cloneable Extension] Available paths:');
     Object.keys(dataByPath).forEach(path => {
       if (path.includes('attribute')) {
-        console.log(`[Cloneable Extension]   ✅ ${path}`);
       } else {
-        console.log(`[Cloneable Extension]   - ${path}`);
       }
     });
   }
@@ -235,20 +213,11 @@ function performReconstructionFinalization() {
   
   // Process attributes if found
   if (Object.keys(reconstructedAttributes).length > 0) {
-    console.log('[Cloneable Extension] 🚀 Processing reconstructed attributes into interface format...');
     processAttributesData(reconstructedAttributes);
   }
   
-  console.log('[Cloneable Extension] 📊 FINAL RECONSTRUCTION SUMMARY:');
-  console.log(`  Total messages processed: ${messages.length}`);
-  console.log(`  JSON objects extracted: ${jsonObjects.length}`);
-  console.log(`  Data paths found: ${Object.keys(dataByPath).length}`);
-  console.log(`  Reconstructed attributes keys: ${Object.keys(reconstructedAttributes).length}`);
-  console.log(`  Node types processed: ${window.katapultProcessedNodeTypes ? window.katapultProcessedNodeTypes.length : 0}`);
-  console.log(`  Connection types processed: ${window.katapultProcessedConnectionTypes ? window.katapultProcessedConnectionTypes.length : 0}`);
   
   // Send complete reconstructed data to content script
-  console.log('[Cloneable Extension] 📤 Sending reconstructed data to content script...');
   window.postMessage({
     type: 'cloneable-data-updated',
     nodeTypes: window.katapultProcessedNodeTypes || [],
@@ -256,6 +225,7 @@ function performReconstructionFinalization() {
     attributes: reconstructedAttributes,
     processedAttributes: window.katapultProcessedAttributes || { withPicklists: [], withoutPicklists: [] },
     imageClassifications: window.katapultProcessedImageClassifications || [],
+    nestedAttributeStructures: window.katapultNestedAttributeStructures || {},
     modelData: dataByPath,
     nodeTypesCount: window.katapultProcessedNodeTypes ? window.katapultProcessedNodeTypes.length : 0,
     connectionTypesCount: window.katapultProcessedConnectionTypes ? window.katapultProcessedConnectionTypes.length : 0,
@@ -265,11 +235,6 @@ function performReconstructionFinalization() {
     imageClassificationsCount: window.katapultProcessedImageClassifications ? window.katapultProcessedImageClassifications.length : 0
   }, '*');
   
-  console.log('[Cloneable Extension] ✅ Data sent to content script:', {
-    nodeTypes: window.katapultProcessedNodeTypes ? window.katapultProcessedNodeTypes.length : 0,
-    connectionTypes: window.katapultProcessedConnectionTypes ? window.katapultProcessedConnectionTypes.length : 0,
-    attributes: Object.keys(reconstructedAttributes).length
-  });
 }
 
 // Helper function to detect message type (like dumper)
@@ -290,7 +255,6 @@ function detectMessageType(parsed) {
 
 // Process attributes data into interface format
 function processAttributesData(attributesData) {
-  console.log('[Cloneable Extension] 🔧 Processing attributes data:', Object.keys(attributesData));
   
   // Reset global arrays
   window.katapultProcessedNodeTypes = [];
@@ -299,7 +263,6 @@ function processAttributesData(attributesData) {
   // Process node types
   if (attributesData.node_type && attributesData.node_type.picklists) {
     const nodePicklists = attributesData.node_type.picklists;
-    console.log('[Cloneable Extension] Processing node type picklists:', Object.keys(nodePicklists));
     
     Object.entries(nodePicklists).forEach(([category, types]) => {
       if (types && typeof types === 'object') {
@@ -327,13 +290,11 @@ function processAttributesData(attributesData) {
       }
     });
     
-    console.log(`[Cloneable Extension] ✅ Processed ${window.katapultProcessedNodeTypes.length} node types`);
   }
   
   // Process connection types (connection_type)
   if (attributesData.connection_type && attributesData.connection_type.picklists) {
     const connectionPicklists = attributesData.connection_type.picklists;
-    console.log('[Cloneable Extension] Processing connection type picklists:', Object.keys(connectionPicklists));
     
     Object.entries(connectionPicklists).forEach(([category, types]) => {
       if (types && typeof types === 'object') {
@@ -361,11 +322,9 @@ function processAttributesData(attributesData) {
       }
     });
     
-    console.log(`[Cloneable Extension] ✅ Processed ${window.katapultProcessedConnectionTypes.length} connection types`);
   }
   
   // Process all other attributes 
-  console.log('[Cloneable Extension] 🔧 Processing general attributes...');
   window.katapultProcessedAttributes = {
     withPicklists: [],
     withoutPicklists: []
@@ -417,7 +376,6 @@ function processAttributesData(attributesData) {
           attribute_types: attrData.attribute_types || {}
         });
         
-        console.log(`[Cloneable Extension] ✅ Processed picklist attribute: ${attrName} (${categories.length} categories)`);
       } else {
         // This is a free-form attribute
         window.katapultProcessedAttributes.withoutPicklists.push({
@@ -428,15 +386,12 @@ function processAttributesData(attributesData) {
           attribute_types: attrData.attribute_types || {}
         });
         
-        console.log(`[Cloneable Extension] ✅ Processed free-form attribute: ${attrName}`);
       }
     }
   });
   
-  console.log(`[Cloneable Extension] 📊 Processed ${window.katapultProcessedAttributes.withPicklists.length} picklist attributes and ${window.katapultProcessedAttributes.withoutPicklists.length} free-form attributes`);
   
   // Process image classifications from input_models
-  console.log('[Cloneable Extension] 📸 Processing image classifications...');
   window.katapultProcessedImageClassifications = [];
   
   // Look for input_models data in the globally stored model data
@@ -459,8 +414,18 @@ function processAttributesData(attributesData) {
   }
   
   if (inputModelsData && typeof inputModelsData === 'object') {
-    console.log(`[Cloneable Extension] Found input_models at ${foundPath} with ${Object.keys(inputModelsData).length} items`);
-    
+
+    // Extract nested attribute structures from input_models
+    window.katapultNestedAttributeStructures = {};
+    Object.entries(inputModelsData).forEach(([key, modelData]) => {
+      if (modelData && typeof modelData === 'object' && modelData._attributes) {
+        window.katapultNestedAttributeStructures[key] = {
+          nestedFields: modelData._attributes,
+          elementType: modelData.element_type
+        };
+      }
+    });
+
     Object.entries(inputModelsData).forEach(([key, modelData]) => {
       if (modelData && typeof modelData === 'object') {
         // Only include items with element_type of 'chip' - these are the actual image classifications
@@ -520,28 +485,18 @@ function processAttributesData(attributesData) {
             originalData: modelData
           });
           
-          console.log(`[Cloneable Extension] ✅ Processed image classification: ${displayName} (${shortcut})`);
         }
       }
     });
     
-    console.log(`[Cloneable Extension] 📊 Processed ${window.katapultProcessedImageClassifications.length} image classifications`);
   } else {
-    console.log('[Cloneable Extension] ⚠️ No input_models data found for image classifications');
-    console.log('[Cloneable Extension] Available paths:', Object.keys(window.katapultModelAttributesData).filter(p => p.includes('models')));
   }
 }
 
 // Debug function
 window.debugNodeTypes = function() {
-  console.log('📊 Debug Node Types:');
-  console.log('  Total messages:', window.katapultWebSocketMessages?.length || 0);
-  console.log('  Node types:', window.katapultProcessedNodeTypes?.length || 0);
-  console.log('  Connection types:', window.katapultProcessedConnectionTypes?.length || 0);
-  console.log('  Reconstructed attributes:', Object.keys(window.katapultReconstructedAttributes || {}));
   
   if (window.katapultProcessedNodeTypes?.length > 0) {
-    console.log('  Sample node types:', window.katapultProcessedNodeTypes.slice(0, 5));
   }
   
   return {
@@ -555,10 +510,8 @@ window.debugNodeTypes = function() {
 // Listen for reconstruction trigger from content script
 window.addEventListener('message', function(event) {
   if (event.data && event.data.type === 'cloneable-trigger-reconstruction') {
-    console.log('[Cloneable Extension] 🚀 Received immediate reconstruction trigger from content script');
     performReconstructionFinalization();
   } else if (event.data && event.data.type === 'cloneable-get-websocket-data-dump') {
-    console.log('[Cloneable Extension] 📨 Received WebSocket data dump request from content script');
     
     // Send the WebSocket messages back to content script
     window.postMessage({
@@ -568,7 +521,6 @@ window.addEventListener('message', function(event) {
       timestamp: new Date().toISOString()
     }, '*');
     
-    console.log(`[Cloneable Extension] 📤 Sent ${(window.katapultWebSocketMessages || []).length} WebSocket messages to content script`);
   }
 });
 
@@ -576,5 +528,3 @@ window.addEventListener('message', function(event) {
 setTimeout(performReconstructionFinalization, 3000); // First pass
 setTimeout(performReconstructionFinalization, 6000); // Second pass
 setTimeout(performReconstructionFinalization, 10000); // Final thorough pass
-
-console.log('[Cloneable Extension] Reconstructor loaded');

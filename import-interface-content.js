@@ -143,7 +143,7 @@ class ImportInterface {
   }
 
   createImportModal() {
-    console.log('[ImportInterface] Creating modal...');
+
     const modal = document.createElement('div');
     modal.id = 'import-modal';
     modal.className = 'import-modal';

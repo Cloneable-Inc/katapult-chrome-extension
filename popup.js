@@ -25,7 +25,7 @@ document.getElementById('dump-websocket-btn').addEventListener('click', () => {
       type: 'DUMP_WEBSOCKET_DATA'
     }, (response) => {
       if (chrome.runtime.lastError) {
-        console.error('Error sending message:', chrome.runtime.lastError);
+
         return;
       }
       
@@ -41,7 +41,7 @@ document.getElementById('dump-websocket-btn').addEventListener('click', () => {
           btn.style.background = '#f44336';
         }, 2000);
       } else {
-        console.error('Failed to dump WebSocket data');
+
       }
     });
   });

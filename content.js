@@ -16,10 +16,12 @@ class ImportInterface {
     this.imageAttachments = {};
     this.availableAttributes = null;
     this.photoClassifications = []; // Initialize as empty array instead of null
-    
+    this.nestedAttributeStructures = {}; // Store nested attribute structures from input_models
+    this.attributeDefinitions = null; // Store raw attribute definitions for picklist lookup
+
     // Set global reference immediately
     window.importInterface = this;
-    
+
     this.init();
   }
 
@@ -30,7 +32,7 @@ class ImportInterface {
   }
 
   resetState() {
-    console.log('[ImportInterface] Resetting state - clearing all selections');
+
     
     // Clear all selections
     this.selectedNodes = [];
@@ -50,7 +52,7 @@ class ImportInterface {
     // Reset any UI state
     this.parseRetryCount = 0;
     
-    console.log('[ImportInterface] State reset complete');
+
   }
 
   loadAttributeSchema() {
@@ -84,7 +86,7 @@ class ImportInterface {
 
   // Update the interface with real data from WebSocket capture
   updateWithCapturedData() {
-    console.log('[ImportInterface] Updating with captured WebSocket data...');
+
     
     // Request fresh data from WebSocket interceptor
     window.postMessage({ type: 'cloneable-get-model-attributes' }, '*');
@@ -96,16 +98,8 @@ class ImportInterface {
   }
   
   parseWebSocketMessages() {
-    console.log('[ImportInterface] 🔍 Checking for reconstructed WebSocket data...');
-    console.log('[ImportInterface] Content script data variables:');
-    console.log('  contentScriptNodeTypes:', window.contentScriptNodeTypes?.length || 'undefined');
-    console.log('  contentScriptConnectionTypes:', window.contentScriptConnectionTypes?.length || 'undefined');  
-    console.log('  contentScriptAttributes:', window.contentScriptAttributes ? Object.keys(window.contentScriptAttributes).length + ' keys' : 'undefined');
-    console.log('  contentScriptModelData:', window.contentScriptModelData ? Object.keys(window.contentScriptModelData).length + ' paths' : 'undefined');
-    
     // Sample first few node types if they exist
     if (window.contentScriptNodeTypes && window.contentScriptNodeTypes.length > 0) {
-      console.log('  First 3 node types:', window.contentScriptNodeTypes.slice(0, 3));
     }
     
     // Check if we have any data at all (from content script context)
@@ -117,7 +111,7 @@ class ImportInterface {
       const messageCount = window.katapultWebSocketMessages?.length || 0;
       
       if (messageCount > 0 && (!this.parseRetryCount || this.parseRetryCount === 1)) {
-        console.log(`[ImportInterface] 🚀 Found ${messageCount} WebSocket messages - triggering immediate reconstruction...`);
+
         
         // Show processing status
         if (document.getElementById('import-modal')) {
@@ -143,8 +137,6 @@ class ImportInterface {
       const retryDelay = Math.min(this.parseRetryCount * 1000, 3000); // 1s, 2s, 3s, 3s...
       
       if (this.parseRetryCount <= maxRetries) {
-        console.log(`[ImportInterface] ⏳ Waiting for reconstruction completion (attempt ${this.parseRetryCount}/${maxRetries}), retry in ${retryDelay/1000}s...`);
-        console.log(`[ImportInterface] WebSocket messages captured: ${messageCount}`);
         
         // Show waiting status in UI if modal is open
         if (document.getElementById('import-modal')) {
@@ -156,7 +148,6 @@ class ImportInterface {
         }, retryDelay);
         return;
       } else {
-        console.log('[ImportInterface] ❌ Reconstruction timeout - proceeding with available data');
         if (document.getElementById('import-modal')) {
           this.showTimeoutMessage();
         }
@@ -169,7 +160,6 @@ class ImportInterface {
     
     // Check if inject.js has already processed the data
     if (window.contentScriptNodeTypes && window.contentScriptNodeTypes.length > 0) {
-      console.log(`[ImportInterface] ✅ Found ${window.contentScriptNodeTypes.length} reconstructed node types from inject script!`);
       
       // Convert processed node types to the expected format
       const nodeCategories = [...new Set(window.contentScriptNodeTypes.map(n => n.category))];
@@ -182,10 +172,6 @@ class ImportInterface {
         this.availableAttributes.nodeTypes.values[category] = typesInCategory;
       });
       
-      console.log('[ImportInterface] ✅ Loaded node types from reconstructed data');
-      console.log('[ImportInterface] Node categories:', nodeCategories);
-      console.log('[ImportInterface] Sample values:', this.availableAttributes.nodeTypes.values);
-      
       // Update node button status
       this.nodeTypesLoaded = true;
       
@@ -194,7 +180,6 @@ class ImportInterface {
     }
     
     if (window.contentScriptConnectionTypes && window.contentScriptConnectionTypes.length > 0) {
-      console.log(`[ImportInterface] ✅ Found ${window.contentScriptConnectionTypes.length} reconstructed connection types from inject script!`);
       
       // Convert processed connection types to the expected format
       const connCategories = [...new Set(window.contentScriptConnectionTypes.map(c => c.category))];
@@ -207,20 +192,23 @@ class ImportInterface {
         this.availableAttributes.connectionTypes.values[category] = typesInCategory;
       });
       
-      console.log('[ImportInterface] ✅ Loaded connection types from reconstructed data');
-      console.log('[ImportInterface] Connection categories:', connCategories);
-      console.log('[ImportInterface] Sample values:', this.availableAttributes.connectionTypes.values);
-      
       // Refresh the UI if it's currently displayed
       this.refreshUIWithNewData();
     }
     
+    // Load nested attribute structures if available
+    if (window.contentScriptNestedStructures) {
+      this.nestedAttributeStructures = window.contentScriptNestedStructures;
+    }
+
     // Use the reconstructed attributes for the general attributes list
     if (window.contentScriptAttributes && Object.keys(window.contentScriptAttributes).length > 0) {
-      console.log('[ImportInterface] PROCESSING PATH 1: Processing reconstructed attributes from contentScriptAttributes...');
+      // Store raw attribute definitions for picklist lookups
+      this.attributeDefinitions = window.contentScriptAttributes;
       this.processAttributeDefinitions(window.contentScriptAttributes);
     } else if (window.katapultReconstructedAttributes) {
-      console.log('[ImportInterface] PROCESSING PATH 2: Processing reconstructed attributes from katapultReconstructedAttributes fallback...');
+      // Store raw attribute definitions for picklist lookups
+      this.attributeDefinitions = window.katapultReconstructedAttributes;
       this.processAttributeDefinitions(window.katapultReconstructedAttributes);
     }
     
@@ -229,11 +217,11 @@ class ImportInterface {
     const connectionTypesCount = this.availableAttributes.connectionTypes.categories.length;
     const attributesCount = this.availableAttributes.withPicklists.length + this.availableAttributes.withoutPicklists.length;
     
-    console.log(`[ImportInterface] Summary: ${nodeTypesCount} node categories, ${connectionTypesCount} connection categories, ${attributesCount} attributes`);
+
     
     // If we didn't find processed data, wait for WebSocket reconstruction
     if (nodeTypesCount === 0 && connectionTypesCount === 0) {
-      console.log('[ImportInterface] No processed data found - waiting for real WebSocket reconstruction...');
+
       // REMOVED: No longer using fallback parsing or sample data creation
     }
   }
@@ -241,19 +229,19 @@ class ImportInterface {
   // REMOVED: fallbackParseWebSocketMessages method - no longer using fallback parsing
   
   refreshUIWithNewData() {
-    console.log('[ImportInterface] 🔄 Refreshing UI with newly reconstructed data...');
+
     
     // Check if the modal is currently displayed
     const modal = document.getElementById('import-modal');
     if (!modal || modal.style.display === 'none') {
-      console.log('[ImportInterface] Modal not displayed yet, refresh will happen when opened');
+
       return;
     }
     
     // Check if we're on the configuration step - if so, don't refresh the selection step
     const configSection = document.getElementById('configure-section');
     if (configSection && configSection.classList.contains('active')) {
-      console.log('[ImportInterface] User is on configuration step, skipping selection refresh');
+
       return;
     }
     
@@ -265,14 +253,14 @@ class ImportInterface {
     
     // Only skip refresh if we have rendered items AND the data matches what we have
     if (existingNodes > 0 && hasNodeData && existingConnections > 0 && hasConnectionData) {
-      console.log('[ImportInterface] Complete data already rendered, skipping refresh to preserve selections');
+
       return;
     }
     
     // Refresh the nodes selector content with real data
     const nodesSelector = document.getElementById('nodes-selector');
     if (nodesSelector) {
-      console.log('[ImportInterface] Refreshing nodes selector with real data...');
+
       nodesSelector.innerHTML = this.renderNodeTypeSelector();
       this.reattachSelectionListeners(modal);
     }
@@ -280,18 +268,18 @@ class ImportInterface {
     // Refresh the connections selector content with real data  
     const connectionsSelector = document.getElementById('connections-selector');
     if (connectionsSelector && this.availableAttributes.connectionTypes.categories.length > 0) {
-      console.log('[ImportInterface] Refreshing connections selector with real data...');
-      console.log('[ImportInterface] Connection categories available:', this.availableAttributes.connectionTypes.categories);
+
+
       connectionsSelector.innerHTML = this.renderConnectionTypeSelector();
       this.reattachSelectionListeners(modal);
     } else if (connectionsSelector) {
-      console.log('[ImportInterface] Connection types not ready yet, will refresh later');
+
     }
     
     // Refresh the sections selector content with real data
     const sectionsSelector = document.getElementById('sections-selector');
     if (sectionsSelector) {
-      console.log('[ImportInterface] Refreshing sections selector with real data...');
+
       sectionsSelector.innerHTML = this.renderSectionTypeSelector();
       this.reattachSelectionListeners(modal);
     }
@@ -300,7 +288,7 @@ class ImportInterface {
     const nodeTypesCount = this.availableAttributes.nodeTypes.categories.length;
     const connectionTypesCount = this.availableAttributes.connectionTypes.categories.length;
     
-    console.log(`[ImportInterface] ✅ UI refresh complete - ${nodeTypesCount} node categories, ${connectionTypesCount} connection categories`);
+
   }
   
   reattachSelectionListeners(modal) {
@@ -321,18 +309,16 @@ class ImportInterface {
   
   // Add missing methods that are called from the postMessage listener
   renderNodeSelection() {
-    console.log('[ImportInterface] renderNodeSelection called - refreshing UI...');
+
     this.refreshUIWithNewData();
   }
   
   renderConnectionSelection() {
-    console.log('[ImportInterface] renderConnectionSelection called - refreshing UI...');
+
     this.refreshUIWithNewData();
   }
   
   processAttributeDefinitions(attributesData) {
-    console.log('[ImportInterface] Processing attribute definitions...');
-    console.log(`[ImportInterface] Processing ${Object.keys(attributesData).length} attributes`);
     
     // Clear existing attributes to prevent duplicates from multiple calls
     this.availableAttributes.withPicklists = [];
@@ -374,7 +360,7 @@ class ImportInterface {
             });
           }
           
-          this.availableAttributes.withPicklists.push({
+          const attrObj = {
             name: attrName,
             displayName: this.formatDisplayName(attrName),
             dataType: 'picklist',
@@ -382,9 +368,17 @@ class ImportInterface {
             appliesTo: appliesTo.length > 0 ? appliesTo : this.determineAppliesTo(attrName),
             categories: categories,
             values: values
-          });
+          };
+
+          // Add nested structure if available
+          if (this.nestedAttributeStructures && this.nestedAttributeStructures[attrName]) {
+            attrObj.nestedFields = this.nestedAttributeStructures[attrName].nestedFields;
+            attrObj.isCompound = true;
+          }
+
+          this.availableAttributes.withPicklists.push(attrObj);
           
-          console.log(`[ImportInterface] Added picklist attribute: ${attrName}`);
+
         } else {
           // This is a free-form attribute
           // Extract attribute_types into an array
@@ -397,15 +391,23 @@ class ImportInterface {
             });
           }
           
-          this.availableAttributes.withoutPicklists.push({
+          const attrObj = {
             name: attrName,
             displayName: this.formatDisplayName(attrName),
             dataType: this.getCorrectAttributeType(attrName, attrData),
             required: attrData.required || false,
             appliesTo: appliesTo.length > 0 ? appliesTo : this.determineAppliesTo(attrName)
-          });
+          };
+
+          // Add nested structure if available
+          if (this.nestedAttributeStructures && this.nestedAttributeStructures[attrName]) {
+            attrObj.nestedFields = this.nestedAttributeStructures[attrName].nestedFields;
+            attrObj.isCompound = true;
+          }
+
+          this.availableAttributes.withoutPicklists.push(attrObj);
           
-          console.log(`[ImportInterface] Added free-form attribute: ${attrName}`);
+
         }
       }
     });
@@ -448,8 +450,6 @@ class ImportInterface {
     const picklistAttrs = []; // Start completely empty
     const freeformAttrs = []; // Start completely empty
     
-    console.log(`[ImportInterface] parseModelAttributes: Starting fresh with ${Object.keys(modelAttributes || {}).length} attributes to process`);
-    
     // Parse through the captured attributes and add/update them
     Object.entries(modelAttributes || {}).forEach(([attrName, attrData]) => {
       // Skip node_type and cable_type as they're handled separately
@@ -489,17 +489,16 @@ class ImportInterface {
         if (existingPicklistIndex >= 0) {
           // Update existing
           picklistAttrs[existingPicklistIndex] = newAttr;
-          console.log(`[ImportInterface] Updated picklist attribute: ${attrName}`);
+
         } else {
           // Add new
           picklistAttrs.push(newAttr);
-          console.log(`[ImportInterface] Added new picklist attribute: ${attrName}`);
+
         }
         
         // Remove from freeform if it exists there (avoid duplicates)
         if (existingFreeformIndex >= 0) {
           freeformAttrs.splice(existingFreeformIndex, 1);
-          console.log(`[ImportInterface] Removed ${attrName} from freeform (now picklist)`);
         }
       } else {
         // This is a free-form attribute
@@ -513,17 +512,16 @@ class ImportInterface {
         if (existingFreeformIndex >= 0) {
           // Update existing
           freeformAttrs[existingFreeformIndex] = newAttr;
-          console.log(`[ImportInterface] Updated freeform attribute: ${attrName}`);
+
         } else {
           // Add new
           freeformAttrs.push(newAttr);
-          console.log(`[ImportInterface] Added new freeform attribute: ${attrName}`);
+
         }
         
         // Remove from picklist if it exists there (avoid duplicates)
         if (existingPicklistIndex >= 0) {
           picklistAttrs.splice(existingPicklistIndex, 1);
-          console.log(`[ImportInterface] Removed ${attrName} from picklist (now freeform)`);
         }
       }
     });
@@ -534,12 +532,12 @@ class ImportInterface {
     // Final deduplication step to ensure no attribute appears in both arrays
     this.deduplicateAttributes();
     
-    console.log(`[ImportInterface] Final result: ${this.availableAttributes.withPicklists.length} picklist attributes and ${this.availableAttributes.withoutPicklists.length} freeform attributes`);
+
   }
 
   // Ensure no attribute appears in both withPicklists and withoutPicklists arrays
   deduplicateAttributes() {
-    console.log('[ImportInterface] DEDUPLICATION: Starting deduplication...');
+
     
     // First, identify boolean attributes that should NEVER be in picklists
     const booleanAttributeNames = ['done', 'field_completed', 'flag_for_review', 'owner', 'pole_top_extension', 'proposed', 'tracing_complete', 'verify_location_in_field'];
@@ -548,7 +546,7 @@ class ImportInterface {
     const originalPicklistCount = this.availableAttributes.withPicklists.length;
     this.availableAttributes.withPicklists = this.availableAttributes.withPicklists.filter(attr => {
       if (booleanAttributeNames.includes(attr.name)) {
-        console.log(`[ImportInterface] DEDUPLICATION: Removed boolean '${attr.name}' from picklists`);
+
         return false;
       }
       return true;
@@ -558,7 +556,7 @@ class ImportInterface {
     booleanAttributeNames.forEach(attrName => {
       const existsInFreeform = this.availableAttributes.withoutPicklists.find(attr => attr.name === attrName);
       if (!existsInFreeform) {
-        console.log(`[ImportInterface] DEDUPLICATION: Adding missing boolean '${attrName}' to freeform`);
+
         this.availableAttributes.withoutPicklists.push({
           name: attrName,
           displayName: this.formatDisplayName(attrName),
@@ -566,7 +564,7 @@ class ImportInterface {
           required: false
         });
       } else if (existsInFreeform.dataType !== 'boolean') {
-        console.log(`[ImportInterface] DEDUPLICATION: Correcting '${attrName}' dataType to boolean`);
+
         existsInFreeform.dataType = 'boolean';
       }
     });
@@ -584,12 +582,12 @@ class ImportInterface {
       // Remove non-boolean duplicates
       const isDuplicate = picklistNames.has(attr.name);
       if (isDuplicate) {
-        console.log(`[ImportInterface] DEDUPLICATION: Removed duplicate '${attr.name}' from freeform`);
+
       }
       return !isDuplicate;
     });
     
-    console.log(`[ImportInterface] DEDUPLICATION: ${originalPicklistCount} → ${this.availableAttributes.withPicklists.length} picklists, ${originalFreeformCount} → ${this.availableAttributes.withoutPicklists.length} freeform`);
+
     
     // Final verification - log any remaining duplicates
     const finalPicklistNames = new Set(this.availableAttributes.withPicklists.map(attr => attr.name));
@@ -597,9 +595,9 @@ class ImportInterface {
     const intersections = [...finalPicklistNames].filter(name => finalFreeformNames.has(name));
     
     if (intersections.length > 0) {
-      console.error(`[ImportInterface] DEDUPLICATION FAILED: Still have duplicates:`, intersections);
+
     } else {
-      console.log(`[ImportInterface] DEDUPLICATION: Success - no duplicates remaining`);
+
     }
   }
 
@@ -614,17 +612,34 @@ class ImportInterface {
   // CORRECTED attribute type detection based on Firebase analysis
   getCorrectAttributeType(attributeName, attributeDefinition) {
     const guiElement = attributeDefinition?.gui_element;
-    const hasPicklists = attributeDefinition?.picklists && 
+
+    // Define standard supported types
+    const standardTypes = [
+      'textbox', 'textarea', 'dropdown', 'checkbox', 'date',
+      'calibrated-width', 'calibrated-height', 'coordinate_capture'
+    ];
+
+    // Check for nested structure - but ONLY use it for special/unsupported types
+    if (this.nestedAttributeStructures && this.nestedAttributeStructures[attributeName]) {
+      if (standardTypes.includes(guiElement)) {
+        // Standard type - ignore nesting, fall through to normal handling
+      } else {
+        // Special type (pole_tag, group, timer) - use nested/json
+        return 'json';
+      }
+    }
+
+    const hasPicklists = attributeDefinition?.picklists &&
                         Object.keys(attributeDefinition.picklists).length > 0;
-    const hasNumericConstraints = attributeDefinition?.min !== undefined || 
-                                 attributeDefinition?.max !== undefined || 
+    const hasNumericConstraints = attributeDefinition?.min !== undefined ||
+                                 attributeDefinition?.max !== undefined ||
                                  attributeDefinition?.step !== undefined ||
                                  attributeDefinition?.format === 'feet-inches';
-    
+
     // Check for numeric attributes that use textbox but should be numbers
     const measurementNames = [
-      'anc_elevation', 'google_elevation', 'height', 'lasered_cable_height', 
-      'lasered_ground_height', 'manual_height', 'measured_elevation', 
+      'anc_elevation', 'google_elevation', 'height', 'lasered_cable_height',
+      'lasered_ground_height', 'manual_height', 'measured_elevation',
       'measured_groundline_circumference', 'measured_pole_height'
     ];
     
@@ -685,16 +700,17 @@ class ImportInterface {
     const typeMap = {
       'picklist': 'picklist',
       'boolean': 'boolean',
-      'number': 'number', 
+      'number': 'number',
       'date': 'date',
       'textarea': 'text',
       'text': 'text',
       'coordinate': 'location', // Display coordinate_capture as "location"
       'timer': 'timer',
       'pole_tag': 'tag',
-      'group': 'group'
+      'group': 'group',
+      'json': 'nested' // Display json types as "nested"
     };
-    
+
     return typeMap[dataType] || dataType || 'text';
   }
 
@@ -711,6 +727,8 @@ class ImportInterface {
         return 'type-location'; // Special styling for location
       case 'picklist':
         return 'type-picklist';
+      case 'json':
+        return 'type-nested'; // Normal styling for nested/json types
       case 'timer':
       case 'pole_tag':
       case 'group':
@@ -722,7 +740,10 @@ class ImportInterface {
 
   // Helper method to check if a data type is special and should be disabled (except coordinate)
   isSpecialType(dataType) {
-    return ['timer', 'pole_tag', 'group'].includes(dataType);
+    // JSON/nested types are NOT special - they're fully supported
+    if (dataType === 'json') return false;
+    // Other special types remain disabled (timer, pole_tag should never appear as they convert to json)
+    return ['timer'].includes(dataType);
   }
 
   // Helper method to get Cloneable-compatible data types
@@ -737,10 +758,42 @@ class ImportInterface {
       'textarea': 'string',
       'timer': 'number', // Time values can be numbers
       'pole_tag': 'string', // Tags are strings
-      'group': 'object' // Groups might be objects
+      'group': 'object', // Groups might be objects
+      'json': 'json' // JSON types export as json
     };
     
     return cloneableTypeMap[dataType] || 'string';
+  }
+
+  // Helper method to format nested fields for display
+  formatNestedFieldsDisplay(attrName) {
+    const nested = this.nestedAttributeStructures && this.nestedAttributeStructures[attrName];
+    if (!nested || !nested.nestedFields) return '';
+
+    // Check if parent attribute is a "group" type with group_items
+    const parentAttrDef = this.attributeDefinitions ? this.attributeDefinitions[attrName] : null;
+    const isGroupType = parentAttrDef && parentAttrDef.gui_element === 'group' && parentAttrDef.group_items;
+
+    const fields = Object.entries(nested.nestedFields).map(([name, def]) => {
+      let actualGuiElement = def._gui_element || 'text';
+
+      // For group types, map nested field to actual attribute definition
+      if (isGroupType) {
+        const groupItems = Object.values(parentAttrDef.group_items);
+        const referencedAttrName = groupItems.find(item => item.includes(name));
+
+        if (referencedAttrName && this.attributeDefinitions[referencedAttrName]) {
+          const referencedAttr = this.attributeDefinitions[referencedAttrName];
+          actualGuiElement = referencedAttr.gui_element || actualGuiElement;
+        }
+      }
+
+      // Capitalize first letter of name
+      const displayName = name.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      return `<span style="display: inline-block; margin-right: 12px;">• ${displayName} <span style="opacity: 0.7;">(${actualGuiElement})</span></span>`;
+    });
+
+    return fields.join('');
   }
 
   // Helper methods for export summary
@@ -813,7 +866,6 @@ class ImportInterface {
     // Use CORRECTED type detection first
     const correctType = this.getCorrectAttributeType(attrName, attrData);
     if (correctType !== 'text' || attrData?.gui_element) {
-      console.log(`[ImportInterface] Using corrected type for ${attrName}: ${correctType} (gui: ${attrData?.gui_element})`);
       return correctType;
     }
     
@@ -835,13 +887,13 @@ class ImportInterface {
   }
 
   loadPhotoClassifications() {
-    console.log('[ImportInterface] Loading photo classifications from processed data...');
-    console.log('[ImportInterface] Checking window.contentScriptImageClassifications:', window.contentScriptImageClassifications);
-    console.log('[ImportInterface] Checking window.katapultProcessedImageClassifications:', window.katapultProcessedImageClassifications);
+
+
+
     
     // Check if we have image classifications from the content script data
     if (window.contentScriptImageClassifications && window.contentScriptImageClassifications.length > 0) {
-      console.log(`[ImportInterface] Found ${window.contentScriptImageClassifications.length} processed image classifications from content script`);
+
       
       // Convert processed image classifications to the expected format
       this.photoClassifications = window.contentScriptImageClassifications.map(image => ({
@@ -857,11 +909,11 @@ class ImportInterface {
         helpText: image.helpText
       }));
       
-      console.log('[ImportInterface] ✅ Loaded image classifications from content script data');
+
     }
     // Also check legacy locations for backwards compatibility
     else if (window.katapultProcessedImageClassifications && window.katapultProcessedImageClassifications.length > 0) {
-      console.log(`[ImportInterface] Found ${window.katapultProcessedImageClassifications.length} processed image classifications from inject script`);
+
       
       // Convert processed image classifications to the expected format
       this.photoClassifications = window.katapultProcessedImageClassifications.map(image => ({
@@ -877,11 +929,11 @@ class ImportInterface {
         helpText: image.helpText
       }));
       
-      console.log('[ImportInterface] ✅ Loaded image classifications from inject script data');
+
     } else {
       // Initialize empty - will be populated from WebSocket data
       this.photoClassifications = [];
-      console.log('[ImportInterface] No processed image classifications found, starting with empty array');
+
     }
   }
 
@@ -946,7 +998,7 @@ class ImportInterface {
   }
 
   refreshInterface() {
-    console.log('[ImportInterface] Refreshing interface with new data...');
+
     
     // Close existing modal
     const existingModal = document.getElementById('import-modal');
@@ -958,11 +1010,11 @@ class ImportInterface {
     const modal = this.createImportModal();
     document.body.appendChild(modal);
     
-    console.log('[ImportInterface] Interface refreshed successfully');
+
   }
 
   createImportModal() {
-    console.log('[ImportInterface] Creating modal...');
+
     // Ensure global reference is set before creating modal
     window.importInterface = this;
     const modal = document.createElement('div');
@@ -1252,7 +1304,7 @@ class ImportInterface {
     
     // If no connection types are available yet, show loading/waiting message
     if (!connectionTypes || !connectionTypes.values || Object.keys(connectionTypes.values).length === 0) {
-      console.log('[ImportInterface] No connection types available yet, showing loading message');
+
       return `
         <div style="text-align: center; padding: 40px; color: #666;">
           <div style="margin-bottom: 20px; font-size: 24px;">⏳</div>
@@ -1688,7 +1740,7 @@ class ImportInterface {
   toggleCard(button) {
     const card = button.closest('.node-config-card');
     if (!card) {
-      console.error('[ImportInterface] Could not find parent card');
+
       return;
     }
     const chevron = button.querySelector('.chevron');
@@ -1701,7 +1753,7 @@ class ImportInterface {
   }
   
   expandAll() {
-    console.log('[ImportInterface] Expanding all accordions');
+
     document.querySelectorAll('.node-config-card').forEach(card => {
       card.classList.remove('collapsed');
       const chevron = card.querySelector('.chevron');
@@ -1710,7 +1762,7 @@ class ImportInterface {
   }
   
   collapseAll() {
-    console.log('[ImportInterface] Collapsing all accordions');
+
     document.querySelectorAll('.node-config-card').forEach(card => {
       card.classList.add('collapsed');
       const chevron = card.querySelector('.chevron');
@@ -2058,11 +2110,12 @@ class ImportInterface {
     filteredAttributes.forEach(attr => {
       const isChecked = this.isAttributeSelected(entityId, attr.name);
       const hasPicklist = attr.values && Object.keys(attr.values).length > 0;
-      
+      const nestedDisplay = (attr.nestedFields && attr.dataType === 'json') ? this.formatNestedFieldsDisplay(attr.name) : '';
+
       html += `
         <label class="attribute-option ${isChecked ? 'selected' : ''} ${this.isSpecialType(attr.dataType) ? 'type-disabled' : ''}">
-          <input type="checkbox" 
-                 value="${attr.name}" 
+          <input type="checkbox"
+                 value="${attr.name}"
                  data-entity="${entityId}"
                  data-entity-type="${entityType}"
                  data-type="${hasPicklist ? 'picklist' : 'freeform'}"
@@ -2072,6 +2125,7 @@ class ImportInterface {
               <span class="attribute-name">${attr.displayName}</span>
               <span class="attribute-type-badge ${this.getTypeStyleClass(attr.dataType)}">${this.getDisplayDataType(attr.dataType)}</span>
             </div>
+            ${nestedDisplay ? `<div class="nested-fields-list">${nestedDisplay}</div>` : ''}
             ${hasPicklist ? this.renderPicklistPreview(attr) : ''}
           </div>
         </label>
@@ -2104,10 +2158,12 @@ class ImportInterface {
     
     filteredAttributes.forEach(attr => {
       const isChecked = this.isAttributeSelected(entityId, attr.name);
+      const nestedDisplay = (attr.nestedFields && attr.dataType === 'json') ? this.formatNestedFieldsDisplay(attr.name) : '';
+
       html += `
         <label class="attribute-option ${isChecked ? 'selected' : ''} ${this.isSpecialType(attr.dataType) ? 'type-disabled' : ''}">
-          <input type="checkbox" 
-                 value="${attr.name}" 
+          <input type="checkbox"
+                 value="${attr.name}"
                  data-entity="${entityId}"
                  data-entity-type="${entityType}"
                  data-type="${type}"
@@ -2117,6 +2173,7 @@ class ImportInterface {
               <span class="attribute-name">${attr.displayName}</span>
               <span class="attribute-type-badge ${this.getTypeStyleClass(attr.dataType)}">${this.getDisplayDataType(attr.dataType)}</span>
             </div>
+            ${nestedDisplay ? `<div class="nested-fields-list">${nestedDisplay}</div>` : ''}
             ${type === 'picklist' ? this.renderPicklistPreview(attr) : ''}
           </div>
         </label>
@@ -2152,20 +2209,20 @@ class ImportInterface {
     
     // Check if photoClassifications is available
     if (!this.photoClassifications || !Array.isArray(this.photoClassifications)) {
-      console.log('[ImportInterface] Warning: photoClassifications not available or not an array:', this.photoClassifications);
+
       html += '<div style="padding: 20px; color: #999; text-align: center;">No image classifications available</div>';
       html += '</div>';
       return html;
     }
     
     if (this.photoClassifications.length === 0) {
-      console.log('[ImportInterface] No image classifications to render');
+
       html += '<div style="padding: 20px; color: #999; text-align: center;">No image classifications configured</div>';
       html += '</div>';
       return html;
     }
     
-    console.log(`[ImportInterface] Rendering ${this.photoClassifications.length} image classifications for node ${nodeId}`);
+
     
     // Sort image classifications alphabetically
     const sortedClassifications = [...this.photoClassifications].sort((a, b) => {
@@ -2215,25 +2272,25 @@ class ImportInterface {
     
     // Card toggle (expand/collapse) - make entire header clickable
     const cardHeaders = document.querySelectorAll('.node-config-header');
-    console.log(`[ImportInterface] Attaching accordion listeners to ${cardHeaders.length} headers`);
+
     
     // Convert NodeList to Array to avoid issues with replacing elements while iterating
     Array.from(cardHeaders).forEach((header, index) => {
       // Make header look clickable
       header.style.cursor = 'pointer';
       
-      console.log(`[ImportInterface] Attaching click listener to header ${index}`);
+
       
       // Add click listener to entire header (don't clone, just add directly)
       header.addEventListener('click', function(e) {
-        console.log('[ImportInterface] Header clicked!', e.target);
+
         e.preventDefault();
         e.stopPropagation();
         
         // Find the card that contains this header
         const card = this.closest('.node-config-card');
         if (!card) {
-          console.error('[ImportInterface] Could not find parent card');
+
           return;
         }
         
@@ -2247,17 +2304,13 @@ class ImportInterface {
           chevron.textContent = isCollapsed ? '▼' : '▶';
         }
         
-        console.log('[ImportInterface] Accordion toggled:', {
-          nodeId: card.dataset.nodeId,
-          wasCollapsed: isCollapsed,
-          isNowCollapsed: card.classList.contains('collapsed')
-        });
+        
       });
     });
     
     // Image classification toggling - attach after header listeners
     const classificationElements = document.querySelectorAll('[data-action="toggle-classification"]');
-    console.log(`[ImportInterface] Found ${classificationElements.length} image classification elements to attach listeners to`);
+
     
     classificationElements.forEach(element => {
       // Ensure element is clickable
@@ -2268,16 +2321,9 @@ class ImportInterface {
         e.preventDefault();
         e.stopPropagation(); // Prevent accordion toggle
         
-        console.log('[ImportInterface] Image classification clicked!', {
-          nodeId: this.dataset.node,
-          classificationId: this.dataset.classification,
-          currentlySelected: this.classList.contains('selected'),
-          element: this
-        });
-        
         // Ensure we have the required data
         if (!this.dataset.node || !this.dataset.classification) {
-          console.error('[ImportInterface] Missing node or classification data on element');
+
           return;
         }
         
@@ -2290,7 +2336,7 @@ class ImportInterface {
           // Toggle the selection and pass the element for UI update
           self.toggleImageClassification(nodeId, classificationId, !isSelected, this);
         } catch (error) {
-          console.error('[ImportInterface] Error in image classification click handler:', error);
+
         }
       });
     });
@@ -2302,7 +2348,7 @@ class ImportInterface {
       const newExpandHandler = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        console.log('[ImportInterface] Expand all clicked');
+
         self.expandAll();
       };
       // Clone and replace to remove all existing listeners
@@ -2318,7 +2364,7 @@ class ImportInterface {
       const newCollapseHandler = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        console.log('[ImportInterface] Collapse all clicked');
+
         self.collapseAll();
       };
       // Clone and replace to remove all existing listeners
@@ -2347,10 +2393,7 @@ class ImportInterface {
         const nodeId = badge.dataset.node;
         const classificationId = badge.dataset.classification;
         
-        console.log('[ImportInterface] Image mode toggle clicked:', {
-          nodeId,
-          classificationId
-        });
+        
         
         // Get current mode and toggle it
         const imageConfig = self.getImageClassificationConfig(nodeId, classificationId);
@@ -2425,12 +2468,7 @@ class ImportInterface {
   }
 
   toggleImageClassification(nodeId, classificationId, isChecked, element) {
-    console.log('[ImportInterface] toggleImageClassification called:', {
-      nodeId,
-      classificationId,
-      isChecked,
-      hasElement: !!element
-    });
+    
     
     if (!this.imageAttachments[nodeId]) {
       this.imageAttachments[nodeId] = [];
@@ -2745,7 +2783,7 @@ class ImportInterface {
       // Check in free-form attributes
       const freeformAttr = this.availableAttributes.withoutPicklists.find(a => a.name === attrName);
       if (freeformAttr) {
-        return {
+        const metadata = {
           name: {
             name: attrName,
             type: 'freeform'
@@ -2755,6 +2793,81 @@ class ImportInterface {
           cloneableDataType: this.getCloneableDataType(freeformAttr.dataType), // Enhanced for Cloneable
           isSpecialType: this.isSpecialType(freeformAttr.dataType)
         };
+
+        // Include nested field structure ONLY if dataType is json
+        if (freeformAttr.nestedFields && freeformAttr.dataType === 'json') {
+          metadata.nestedFields = {};
+
+          // Check if parent attribute is a "group" type with group_items
+          const parentAttrDef = this.attributeDefinitions ? this.attributeDefinitions[attrName] : null;
+          const isGroupType = parentAttrDef && parentAttrDef.gui_element === 'group' && parentAttrDef.group_items;
+
+          Object.entries(freeformAttr.nestedFields).forEach(([fieldName, fieldDef]) => {
+            let actualFieldDef = fieldDef;
+            let actualGuiElement = fieldDef._gui_element || 'text';
+
+            // For group types, map nested field to actual attribute definition
+            if (isGroupType) {
+              const groupItems = Object.values(parentAttrDef.group_items);
+              const referencedAttrName = groupItems.find(item => item.includes(fieldName));
+
+              if (referencedAttrName && this.attributeDefinitions[referencedAttrName]) {
+                const referencedAttr = this.attributeDefinitions[referencedAttrName];
+                actualGuiElement = referencedAttr.gui_element || actualGuiElement;
+                actualFieldDef = referencedAttr;
+              }
+            }
+
+            const fieldMetadata = {
+              type: actualGuiElement,
+              definition: fieldDef
+            };
+
+            // If it's a dropdown, resolve and include picklist options
+            if (actualGuiElement === 'dropdown') {
+              // For group types, use the referenced attribute's picklists
+              if (isGroupType && actualFieldDef.picklists) {
+                const picklistOptions = {};
+                Object.keys(actualFieldDef.picklists).forEach(category => {
+                  const categoryData = actualFieldDef.picklists[category];
+                  if (categoryData && typeof categoryData === 'object') {
+                    picklistOptions[category] = Object.values(categoryData).map(item =>
+                      typeof item === 'object' ? (item.value || item.name || String(item)) : String(item)
+                    );
+                  }
+                });
+                fieldMetadata.picklistOptions = picklistOptions;
+              }
+              // For non-group types with referenced_picklist
+              else if (fieldDef.referenced_picklist && this.attributeDefinitions) {
+                const referencedAttr = this.attributeDefinitions[fieldDef.referenced_picklist];
+                if (referencedAttr && referencedAttr.picklists) {
+                  const picklistOptions = {};
+                  Object.keys(referencedAttr.picklists).forEach(category => {
+                    const categoryData = referencedAttr.picklists[category];
+                    if (categoryData && typeof categoryData === 'object') {
+                      picklistOptions[category] = Object.values(categoryData).map(item =>
+                        typeof item === 'object' ? (item.value || item.name || String(item)) : String(item)
+                      );
+                    }
+                  });
+                  fieldMetadata.picklistOptions = picklistOptions;
+                }
+              }
+              // For inline picklists
+              else if (fieldDef.picklist) {
+                const picklistOptions = {
+                  untitled: Object.values(fieldDef.picklist).map(item => String(item))
+                };
+                fieldMetadata.picklistOptions = picklistOptions;
+              }
+            }
+
+            metadata.nestedFields[fieldName] = fieldMetadata;
+          });
+        }
+
+        return metadata;
       }
       
       // Fallback if not found
@@ -2858,7 +2971,7 @@ class ImportInterface {
   }
 
   downloadReconstructedData() {
-    console.log('[ImportInterface] Downloading reconstructed data...');
+
     
     // Gather all captured data from the window object
     const capturedData = {
@@ -2896,7 +3009,7 @@ class ImportInterface {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     
-    console.log(`[ImportInterface] Downloaded ${jsonString.length} bytes of data`);
+
     
     // Show a notification or feedback
     const btn = document.getElementById('download-reconstructed-btn');
@@ -2912,7 +3025,7 @@ class ImportInterface {
   }
 
   dumpRawWebSocketData() {
-    console.log('[ImportInterface] Dumping raw WebSocket data...');
+
     
     try {
       // Collect all available raw WebSocket data
@@ -2970,8 +3083,7 @@ class ImportInterface {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       
-      console.log(`[ImportInterface] Raw WebSocket dump saved (${jsonString.length} bytes)`);
-      console.log(`[ImportInterface] Raw message count: ${dumpData.debugInfo.totalRawMessages}`);
+
       
       // Show feedback
       const btn = document.getElementById('dump-raw-websocket-btn');
@@ -2986,17 +3098,17 @@ class ImportInterface {
       }
       
     } catch (error) {
-      console.error('[ImportInterface] Failed to dump raw WebSocket data:', error);
+
       alert('Failed to dump raw data: ' + error.message);
     }
   }
 
   dumpCompleteFirebaseJSON() {
-    console.log('[ImportInterface] Dumping complete Firebase JSON data...');
+
     
     // Since the content script can't directly access the injected script's variables,
     // we need to request the data via postMessage
-    console.log('[Firebase Dump] Requesting WebSocket data from inject script...');
+
     
     // Set up a temporary listener for the response
     const handleWebSocketResponse = (event) => {
@@ -3020,10 +3132,10 @@ class ImportInterface {
   }
 
   processFirebaseWebSocketData(messages) {
-    console.log(`[Firebase Dump] Received ${messages ? messages.length : 0} WebSocket messages from inject script`);
+
     
     if (!messages || messages.length === 0) {
-      console.log('[Firebase Dump] No messages to process');
+
       return;
     }
     
@@ -3058,7 +3170,7 @@ class ImportInterface {
             
           } catch (parseError) {
             // This is likely a fragment - try to reconstruct
-            console.log(`[Firebase Dump] Fragment detected at message ${index}, attempting reconstruction...`);
+
             
             // Check if this starts a new fragment sequence
             if (rawData.trim().startsWith('{') || rawData.trim().startsWith('[')) {
@@ -3080,7 +3192,7 @@ class ImportInterface {
             }
           }
         } catch (e) {
-          console.log(`[Firebase Dump] Error processing message ${index}:`, e.message);
+
         }
       });
       
@@ -3090,10 +3202,6 @@ class ImportInterface {
       }
       
       // Debug logging
-      console.log(`[Firebase Dump] Processed ${messages.length} total messages`);
-      console.log(`[Firebase Dump] Successfully parsed ${parsedMessages.length} messages`);
-      console.log(`[Firebase Dump] Found ${Object.keys(completeFirebaseData).length} Firebase paths`);
-      console.log(`[Firebase Dump] Firebase paths:`, Object.keys(completeFirebaseData));
       
       const dumpData = {
         metadata: {
@@ -3130,21 +3238,21 @@ class ImportInterface {
       this.downloadFirebaseJSON(completeFirebaseData, messages.length, parsedMessages, fragments);
       
     } catch (error) {
-      console.error('[ImportInterface] Failed to dump complete Firebase data:', error);
+
       alert('Failed to dump Firebase data: ' + error.message);
     }
   }
 
   processFirebaseWebSocketDataFallback() {
-    console.log('[Firebase Dump] Using fallback method - trying direct window access...');
+
     
     try {
       // Try to access directly (might work in some contexts)
       const messages = window.katapultWebSocketMessages || [];
-      console.log(`[Firebase Dump] Fallback found ${messages.length} raw WebSocket messages`);
+
       
       if (messages.length === 0) {
-        console.log('[Firebase Dump] No WebSocket messages found in fallback either');
+
         // Create minimal dump with available data
         const fallbackData = {
           metadata: {
@@ -3168,17 +3276,13 @@ class ImportInterface {
       this.processFirebaseWebSocketData(messages);
       
     } catch (error) {
-      console.error('[Firebase Dump] Fallback also failed:', error);
+
       alert('Failed to dump Firebase data via fallback: ' + error.message);
     }
   }
 
   downloadFirebaseJSON(completeFirebaseData, totalMessages, parsedMessages, fragments = []) {
     // Debug logging
-    console.log(`[Firebase Dump] Processed ${totalMessages} total messages`);
-    console.log(`[Firebase Dump] Successfully parsed ${parsedMessages.length || parsedMessages} messages`);
-    console.log(`[Firebase Dump] Found ${Object.keys(completeFirebaseData).length} Firebase paths`);
-    console.log(`[Firebase Dump] Firebase paths:`, Object.keys(completeFirebaseData));
     
     // Count reconstructed vs complete messages
     const reconstructedCount = Array.isArray(parsedMessages) ? 
@@ -3253,7 +3357,6 @@ class ImportInterface {
           completeFirebaseData[path] = data;
         }
       }
-      console.log(`[Firebase Dump] Extracted path: ${path} (${typeof data})`);
     }
   }
 
@@ -3273,7 +3376,7 @@ class ImportInterface {
   tryParseFragment(fragmentStr, fragments, completeFirebaseData, parsedMessages) {
     try {
       const parsed = JSON.parse(fragmentStr);
-      console.log(`[Firebase Dump] ✅ Successfully reconstructed fragment into complete JSON`);
+
       
       parsedMessages.push({
         index: `fragment_${fragments.length}`,
@@ -3292,7 +3395,7 @@ class ImportInterface {
       });
       
     } catch (e) {
-      console.log(`[Firebase Dump] ❌ Fragment reconstruction failed:`, e.message);
+
       fragments.push({
         reconstructed: false,
         error: e.message,
@@ -3317,8 +3420,7 @@ class ImportInterface {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     
-    console.log(`[ImportInterface] Firebase JSON saved (${jsonString.length} bytes)`);
-    console.log(`[ImportInterface] Firebase paths found: ${Object.keys(dumpData.completeFirebaseData || dumpData.availableData || {}).length}`);
+
     
     // Show feedback
     const btn = document.getElementById('dump-complete-firebase-btn');
@@ -3461,12 +3563,7 @@ function createExportButton() {
       
       if (!hasNodeTypes || !hasConnectionTypes || !hasAttributes || !hasImageClassifications) {
         alert('Data is still loading. Please wait for all model data to be captured.');
-        console.log('[Cloneable] Data not fully loaded:', {
-          hasNodeTypes,
-          hasConnectionTypes,
-          hasAttributes,
-          hasImageClassifications
-        });
+        
         return;
       }
       
@@ -3478,7 +3575,7 @@ function createExportButton() {
 }
 
 function showAdvancedImportInterface() {
-  console.log('[Cloneable] Showing advanced import interface...');
+
   
   // Check if styles are already loaded
   if (!document.querySelector('link[href*="import-interface.css"]')) {
@@ -3498,7 +3595,7 @@ function showAdvancedImportInterface() {
   
   // Always update the global reference BEFORE creating the modal
   window.importInterface = importInterface;
-  console.log('[ImportInterface] ✅ Global interface reference updated BEFORE modal creation');
+
   
   // Update interface with captured WebSocket data
   importInterface.updateWithCapturedData();
@@ -3507,15 +3604,15 @@ function showAdvancedImportInterface() {
   setTimeout(() => {
     const nodeTypesCount = importInterface.availableAttributes.nodeTypes.categories.length;
     const connectionTypesCount = importInterface.availableAttributes.connectionTypes.categories.length;
-    console.log(`[ImportInterface] After updateWithCapturedData: ${nodeTypesCount} node categories, ${connectionTypesCount} connection categories`);
+
     
     if (nodeTypesCount === 0 && connectionTypesCount === 0) {
-      console.log('[ImportInterface] No data found after update, creating sample data immediately...');
+
       // REMOVED: No longer using sample data - using only real reconstructed WebSocket data
       
       // Refresh the interface if it's already showing
       if (document.getElementById('import-modal')) {
-        console.log('[ImportInterface] Refreshing interface with sample data...');
+
         importInterface.refreshInterface();
       }
     }
@@ -3524,7 +3621,7 @@ function showAdvancedImportInterface() {
   // Create and show the modal
   const modal = importInterface.createImportModal();
   document.body.appendChild(modal);
-  console.log('[Cloneable] Modal added to page');
+
 }
 
 function removeButton() {
@@ -3566,7 +3663,7 @@ let buttonCreatedTime = null;
 // Add message listener to receive data from injected script
 window.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'cloneable-websocket-update') {
-    console.log('[Cloneable Extension] WebSocket update:', event.data);
+
     captureStatus = event.data;
     updateButtonStatus();
   }
@@ -3580,21 +3677,21 @@ window.addEventListener('message', (event) => {
   }
   
   if (event.data && event.data.type === 'cloneable-model-attributes') {
-    console.log('[ImportInterface] Received cloneable-model-attributes message:', event.data);
+
     
     // Check for directly provided node types from reconstruction
     if (event.data.nodeTypes && event.data.nodeTypes.length > 0) {
-      console.log('[ImportInterface] Got reconstructed node types!', event.data.nodeTypes.length, 'types');
+
       
       // Store in both old and new locations for compatibility
       window.cloneableNodeTypes = event.data.nodeTypes;
       window.katapultProcessedNodeTypes = event.data.nodeTypes;
       
-      console.log('[ImportInterface] Stored node types in both window.cloneableNodeTypes and window.katapultProcessedNodeTypes');
+
       
       // Trigger interface update if it exists
       if (importInterface) {
-        console.log('[ImportInterface] Triggering interface update with new data');
+
         importInterface.parseWebSocketMessages();
       }
       
@@ -3604,61 +3701,47 @@ window.addEventListener('message', (event) => {
   
   // Listen for data update notifications from inject script
   if (event.data && event.data.type === 'cloneable-data-updated') {
-    console.log('[ImportInterface] 📢 Received reconstructed data from inject script!');
-    console.log('[ImportInterface] Data received:', {
-      nodeTypes: event.data.nodeTypes?.length || 0,
-      connectionTypes: event.data.connectionTypes?.length || 0,
-      attributes: Object.keys(event.data.attributes || {}).length,
-      modelData: Object.keys(event.data.modelData || {}).length
-    });
-    
+
     // Store the received data in content script context
     window.contentScriptNodeTypes = event.data.nodeTypes || [];
     window.contentScriptConnectionTypes = event.data.connectionTypes || [];
     window.contentScriptAttributes = event.data.attributes || {};
     window.contentScriptModelData = event.data.modelData || {};
     window.contentScriptImageClassifications = event.data.imageClassifications || [];
+    window.contentScriptNestedStructures = event.data.nestedAttributeStructures || {};
     
     // Also store in the location that updateButtonStatus checks
     if (event.data.nodeTypes && event.data.nodeTypes.length > 0) {
       window.cloneableNodeTypes = event.data.nodeTypes;
     }
     
-    console.log('[ImportInterface] ✅ Data stored in content script context');
-    console.log('[ImportInterface] Image classifications:', event.data.imageClassifications?.length || 0);
+
+
     
+    // Store nested structures in importInterface
+    if (window.importInterface && event.data.nestedAttributeStructures) {
+      window.importInterface.nestedAttributeStructures = event.data.nestedAttributeStructures;
+    }
+
     // Use processed attributes if available, otherwise process raw attributes
     if (window.importInterface && event.data.processedAttributes) {
-      console.log('[ImportInterface] 🎯 Using pre-processed attributes from inject script...');
-      console.log('[ImportInterface] Received attributes:', {
-        withPicklists: event.data.processedAttributes.withPicklists?.length || 0,
-        withoutPicklists: event.data.processedAttributes.withoutPicklists?.length || 0
-      });
-      
+
       // Directly use the processed attributes instead of processing raw data
-      console.log('[ImportInterface] PROCESSING PATH 4: Loading pre-processed attributes from inject script...');
-      console.log('[ImportInterface] Pre-processed data:', {
-        withPicklists: event.data.processedAttributes.withPicklists?.length || 0,
-        withoutPicklists: event.data.processedAttributes.withoutPicklists?.length || 0,
-        doneInPicklists: event.data.processedAttributes.withPicklists?.some(a => a.name === 'done'),
-        doneInFreeform: event.data.processedAttributes.withoutPicklists?.some(a => a.name === 'done')
-      });
-      
       window.importInterface.availableAttributes.withPicklists = event.data.processedAttributes.withPicklists || [];
       window.importInterface.availableAttributes.withoutPicklists = event.data.processedAttributes.withoutPicklists || [];
-      
+
       // Ensure no duplicates from processed data
       window.importInterface.deduplicateAttributes();
-      
-      console.log('[ImportInterface] ✅ Attributes loaded from processed data');
+
+
     } else if (window.importInterface && Object.keys(event.data.attributes || {}).length > 0) {
-      console.log('[ImportInterface] PROCESSING PATH 3: Processing raw attributes from postMessage data...');
+
       window.importInterface.processAttributeDefinitions(event.data.attributes);
     }
     
     // Reload image classifications if available
     if (window.importInterface && event.data.imageClassifications && event.data.imageClassifications.length > 0) {
-      console.log('[ImportInterface] 📸 Reloading image classifications with new data...');
+
       window.importInterface.loadPhotoClassifications();
       
       // Only re-render if we're on the configuration step AND we don't have classifications yet
@@ -3666,7 +3749,7 @@ window.addEventListener('message', (event) => {
       if (document.getElementById('configure-section') && 
           document.getElementById('configure-section').classList.contains('active') &&
           document.querySelectorAll('.classification-option').length === 0) {
-        console.log('[ImportInterface] 🔄 Re-rendering configuration to show image classifications for first time...');
+
         window.importInterface.renderAllConfigurations();
         // Re-attach event listeners after re-render
         window.importInterface.attachConfigurationEventListeners();
@@ -3674,14 +3757,14 @@ window.addEventListener('message', (event) => {
     }
     
     if (importInterface) {
-      console.log('[ImportInterface] 🔄 Triggering UI refresh with newly reconstructed data...');
+
       
       // Parse the new data
       importInterface.parseWebSocketMessages();
       
       // Also refresh the interface if it's currently open
       if (document.getElementById('import-modal')) {
-        console.log('[ImportInterface] 🖥️ Modal is open, refreshing node selection...');
+
         importInterface.renderNodeSelection();
         importInterface.renderConnectionSelection();
       }
@@ -3763,7 +3846,7 @@ function checkCaptureStatus() {
   // Skip if modal is open and user is on configuration step
   if (modal && modal.style.display === 'block' && 
       configSection && configSection.classList.contains('active')) {
-    console.log('[Cloneable] Skipping data request - user is configuring selections');
+
     return;
   }
   
@@ -3808,26 +3891,21 @@ startObserving();
 
 // Debug function to check all data locations
 window.debugNodeTypes = function() {
-  console.log('=== NODE TYPES INFO ===');
-  console.log('window.katapultProcessedNodeTypes:', window.katapultProcessedNodeTypes);
-  console.log('window.cloneableNodeTypes:', window.cloneableNodeTypes);
-  console.log('window.katapultReconstructedAttributes:', window.katapultReconstructedAttributes ? Object.keys(window.katapultReconstructedAttributes) : null);
-  console.log('window.katapultModelAttributesData:', window.katapultModelAttributesData ? Object.keys(window.katapultModelAttributesData) : null);
   
   if (importInterface && importInterface.availableAttributes) {
-    console.log('ImportInterface node categories:', importInterface.availableAttributes.nodeTypes.categories);
-    console.log('ImportInterface node values:', importInterface.availableAttributes.nodeTypes.values);
+
+
   }
   
   // Try to trigger data loading
-  console.log('Requesting fresh data from inject script...');
+
   window.postMessage({ type: 'cloneable-get-model-attributes' }, '*');
 };
 
 // Listen for messages from popup/background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'DUMP_WEBSOCKET_DATA') {
-    console.log('[Cloneable Extension] Dumping raw WebSocket data...');
+
     
     try {
       // Collect all available WebSocket data
@@ -3875,19 +3953,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       
-      console.log(`[Cloneable Extension] WebSocket dump saved (${jsonString.length} bytes)`);
-      console.log(`[Cloneable Extension] Message count: ${dumpData.data.debugInfo.messageCount}`);
+
       
       sendResponse({ success: true, messageCount: dumpData.data.debugInfo.messageCount });
       
     } catch (error) {
-      console.error('[Cloneable Extension] Failed to dump WebSocket data:', error);
+
       sendResponse({ success: false, error: error.message });
     }
     
     return true; // Keep message channel open for async response
   }
 });
-
-console.log('[Cloneable Extension] Debug function available: window.debugNodeTypes()');
-console.log('[Cloneable Extension] Content script loaded and ready');
