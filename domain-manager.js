@@ -62,24 +62,22 @@ function isModelEditorUrl(url) {
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 async function addDomain(domain) {
-  return new Promise(async (resolve) => {
-    // Check if domain is already in defaults
-    if (DEFAULT_DOMAINS.includes(domain)) {
-      resolve({ success: false, error: 'Domain is already included by default' });
-      return;
-    }
+  // Check if domain is already in defaults
+  if (DEFAULT_DOMAINS.includes(domain)) {
+    return { success: false, error: 'Domain is already included by default' };
+  }
 
-    // Get current custom domains
-    const customDomains = await getCustomDomains();
+  // Get current custom domains
+  const customDomains = await getCustomDomains();
 
-    // Check if already added
-    if (customDomains.includes(domain)) {
-      resolve({ success: false, error: 'Domain already added' });
-      return;
-    }
+  // Check if already added
+  if (customDomains.includes(domain)) {
+    return { success: false, error: 'Domain already added' };
+  }
 
-    // Add to storage
-    customDomains.push(domain);
+  // Add to storage
+  customDomains.push(domain);
+  return new Promise((resolve) => {
     chrome.storage.local.set({ [STORAGE_KEY]: customDomains }, () => {
       resolve({ success: true });
     });
@@ -92,16 +90,15 @@ async function addDomain(domain) {
  * @returns {Promise<{success: boolean, error?: string}>}
  */
 async function removeDomain(domain) {
-  return new Promise(async (resolve) => {
-    // Can't remove default domains
-    if (DEFAULT_DOMAINS.includes(domain)) {
-      resolve({ success: false, error: 'Cannot remove default domain' });
-      return;
-    }
+  // Can't remove default domains
+  if (DEFAULT_DOMAINS.includes(domain)) {
+    return { success: false, error: 'Cannot remove default domain' };
+  }
 
-    const customDomains = await getCustomDomains();
-    const filtered = customDomains.filter(d => d !== domain);
+  const customDomains = await getCustomDomains();
+  const filtered = customDomains.filter(d => d !== domain);
 
+  return new Promise((resolve) => {
     chrome.storage.local.set({ [STORAGE_KEY]: filtered }, () => {
       resolve({ success: true });
     });

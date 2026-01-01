@@ -22,18 +22,35 @@ const WEB_RESOURCES = [
   'fallback-data.js'
 ];
 
-// Track registered content script IDs for cleanup
-const registeredScriptIds = new Map(); // domain -> scriptId
+/**
+ * Generate a consistent script ID for a domain
+ */
+function getScriptIdForDomain(domain) {
+  return `content-script-${domain.replace(/[^a-zA-Z0-9]/g, '-')}`;
+}
+
+/**
+ * Check if a content script is already registered for a domain
+ */
+async function isScriptRegistered(domain) {
+  try {
+    const scriptId = getScriptIdForDomain(domain);
+    const registered = await chrome.scripting.getRegisteredContentScripts({ ids: [scriptId] });
+    return registered.length > 0;
+  } catch (error) {
+    return false;
+  }
+}
 
 /**
  * Register content scripts for a specific domain
  */
 async function registerContentScriptsForDomain(domain) {
   try {
-    const scriptId = `content-script-${domain.replace(/[^a-zA-Z0-9]/g, '-')}`;
+    const scriptId = getScriptIdForDomain(domain);
 
-    // Check if already registered
-    if (registeredScriptIds.has(domain)) {
+    // Check if already registered using the API (persists across service worker restarts)
+    if (await isScriptRegistered(domain)) {
       console.log(`Content scripts already registered for ${domain}`);
       return { success: true };
     }
@@ -48,9 +65,7 @@ async function registerContentScriptsForDomain(domain) {
       allFrames: CONTENT_SCRIPT_CONFIG.allFrames
     }]);
 
-    registeredScriptIds.set(domain, scriptId);
     console.log(`Registered content scripts for ${domain} with ID ${scriptId}`);
-
     return { success: true };
 
   } catch (error) {
@@ -64,17 +79,16 @@ async function registerContentScriptsForDomain(domain) {
  */
 async function unregisterContentScriptsForDomain(domain) {
   try {
-    const scriptId = registeredScriptIds.get(domain);
+    const scriptId = getScriptIdForDomain(domain);
 
-    if (!scriptId) {
+    // Check if actually registered before trying to unregister
+    if (!(await isScriptRegistered(domain))) {
       console.log(`No content scripts registered for ${domain}`);
       return { success: true };
     }
 
     // Unregister content scripts
     await chrome.scripting.unregisterContentScripts({ ids: [scriptId] });
-
-    registeredScriptIds.delete(domain);
     console.log(`Unregistered content scripts for ${domain}`);
 
     return { success: true };

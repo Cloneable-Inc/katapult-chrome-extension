@@ -10,7 +10,7 @@
     "scripting"
   ],
   "optional_host_permissions": [
-    "*://*/*"
+    "https://*/*"
   ],
   "host_permissions": [
     "https://katapultpro.com/*",
@@ -33,7 +33,7 @@
         "import-interface.css",
         "fallback-data.js"
       ],
-      "matches": ["<all_urls>"]
+      "matches": ["https://*/*"]
     }
   ],
   "action": {
