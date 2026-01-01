@@ -3501,7 +3501,8 @@ window.importInterface = null; // Also store globally for debugging
 
 function isModelEditorPage() {
   const url = window.location.href;
-  return url.includes('katapultpro.com/model-editor/') && url.includes('#');
+  // Check for model-editor path and hash (model name) without domain restriction
+  return url.includes('/model-editor/') && url.includes('#');
 }
 
 function getModelNameFromURL() {
