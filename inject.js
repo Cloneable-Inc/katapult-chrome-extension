@@ -188,27 +188,91 @@ function performReconstructionFinalization() {
   }
   
   
-  // Extract attributes data from all paths
-  let reconstructedAttributes = {};
-  
-  Object.entries(dataByPath).forEach(([path, data]) => {
-    // Check for attributes at any path that contains /models/attributes
-    if (path.includes('/models/attributes')) {
-      Object.assign(reconstructedAttributes, data);
-    }
-  });
-  
-  // No more fragment detection - we already processed everything
-  if (Object.keys(reconstructedAttributes).length === 0) {
-    Object.keys(dataByPath).forEach(path => {
-      if (path.includes('attribute')) {
-      } else {
-      }
-    });
-  }
-  
-  // Store globally
+  // Store globally first so model detection can use it
   window.katapultModelAttributesData = dataByPath;
+
+  // Detect the currently selected model FIRST (before extracting attributes)
+  // This ensures we prioritize the correct model's data
+  let detectedModelKey = null;
+
+  // Method 1: Try to detect from DOM (Model Editor shows selected model in header)
+  const modelSelectorElement = document.querySelector('[class*="model-selector"]') ||
+                                document.querySelector('[class*="ModelSelector"]') ||
+                                document.querySelector('.MuiChip-label') ||
+                                document.querySelector('[data-model-key]');
+
+  if (modelSelectorElement) {
+    detectedModelKey = modelSelectorElement.dataset?.modelKey ||
+                       modelSelectorElement.textContent?.trim();
+  }
+
+  // Method 2: Check URL for model parameter
+  if (!detectedModelKey) {
+    const urlParams = new URLSearchParams(window.location.search);
+    detectedModelKey = urlParams.get('model') || urlParams.get('model_key');
+
+    const pathMatch = window.location.pathname.match(/model[s]?\/([^\/]+)/i) ||
+                      window.location.hash.match(/model[s]?\/([^\/]+)/i);
+    if (pathMatch) {
+      detectedModelKey = pathMatch[1];
+    }
+  }
+
+  // Method 3: Find model key from captured WebSocket paths
+  const modelKeysInData = new Set();
+  for (const path of Object.keys(dataByPath)) {
+    const match = path.match(/company_space\/([^\/]+)/);
+    if (match) {
+      modelKeysInData.add(match[1]);
+    }
+  }
+
+  if (!detectedModelKey && modelKeysInData.size > 0) {
+    const modelKeys = Array.from(modelKeysInData).sort((a, b) => b.length - a.length);
+    detectedModelKey = modelKeys[0];
+  }
+
+  window.katapultSelectedModelKey = detectedModelKey;
+
+  // Extract attributes data - PRIORITIZE the selected model's path
+  let reconstructedAttributes = {};
+
+  // Build list of attribute paths, prioritizing selected model
+  const attributePaths = Object.keys(dataByPath)
+    .filter(path => path.includes('/models/attributes'))
+    .sort((a, b) => {
+      // Prioritize paths matching selected model
+      const aMatch = detectedModelKey && a.includes(`company_space/${detectedModelKey}`);
+      const bMatch = detectedModelKey && b.includes(`company_space/${detectedModelKey}`);
+      if (aMatch && !bMatch) return -1;
+      if (bMatch && !aMatch) return 1;
+      // Then prefer company_space paths over catalog paths
+      const aIsCompany = a.includes('company_space');
+      const bIsCompany = b.includes('company_space');
+      if (aIsCompany && !bIsCompany) return -1;
+      if (bIsCompany && !aIsCompany) return 1;
+      return 0;
+    });
+
+  // If we have a selected model, try to use ONLY its attributes first
+  if (detectedModelKey) {
+    const selectedModelPath = `photoheight/company_space/${detectedModelKey}/models/attributes`;
+    if (dataByPath[selectedModelPath]) {
+      reconstructedAttributes = dataByPath[selectedModelPath];
+    }
+  }
+
+  // If no attributes found for selected model, merge from prioritized paths
+  if (Object.keys(reconstructedAttributes).length === 0) {
+    for (const path of attributePaths) {
+      const data = dataByPath[path];
+      if (data && typeof data === 'object') {
+        Object.assign(reconstructedAttributes, data);
+      }
+    }
+  }
+
+  // Store globally
   window.katapultReconstructedAttributes = reconstructedAttributes;
   
   // Process attributes if found
@@ -227,12 +291,20 @@ function performReconstructionFinalization() {
     imageClassifications: window.katapultProcessedImageClassifications || [],
     nestedAttributeStructures: window.katapultNestedAttributeStructures || {},
     modelData: dataByPath,
+    // Pole annotation data - pass from page context to content script context
+    poleAnnotationTypes: window.katapultPoleAnnotationTypes || [],
+    inputModelGroups: window.katapultInputModelGroups || null,
+    traceModels: window.katapultTraceModels || null,
+    selectedModelKey: window.katapultSelectedModelKey || null,
+    activeCatalog: window.katapultActiveCatalog || null,
+    // Counts for debugging
     nodeTypesCount: window.katapultProcessedNodeTypes ? window.katapultProcessedNodeTypes.length : 0,
     connectionTypesCount: window.katapultProcessedConnectionTypes ? window.katapultProcessedConnectionTypes.length : 0,
     attributesCount: Object.keys(reconstructedAttributes).length,
     processedPicklistsCount: window.katapultProcessedAttributes ? window.katapultProcessedAttributes.withPicklists.length : 0,
     processedFreeformCount: window.katapultProcessedAttributes ? window.katapultProcessedAttributes.withoutPicklists.length : 0,
-    imageClassificationsCount: window.katapultProcessedImageClassifications ? window.katapultProcessedImageClassifications.length : 0
+    imageClassificationsCount: window.katapultProcessedImageClassifications ? window.katapultProcessedImageClassifications.length : 0,
+    poleAnnotationTypesCount: window.katapultPoleAnnotationTypes ? window.katapultPoleAnnotationTypes.length : 0
   }, '*');
   
 }
@@ -393,18 +465,34 @@ function processAttributesData(attributesData) {
   
   // Process image classifications from input_models
   window.katapultProcessedImageClassifications = [];
-  
-  // Look for input_models data in the globally stored model data
-  // Try multiple possible paths since company name may vary
-  const possiblePaths = [
-    'photoheight/company_space/cloneable&period;ai/models/input_models',
-    // Check all paths that contain /models/input_models
-    ...Object.keys(window.katapultModelAttributesData).filter(path => path.includes('/models/input_models'))
-  ];
-  
+
+  // Use the already-detected model key (set earlier in performReconstructionFinalization)
+  const selectedModelKey = window.katapultSelectedModelKey;
+
+  // Look for input_models data for the selected model
   let inputModelsData = null;
   let foundPath = null;
-  
+
+  // Build possible paths prioritizing the selected model
+  const possiblePaths = [];
+
+  if (selectedModelKey) {
+    // Prioritize the selected model's path
+    possiblePaths.push(`photoheight/company_space/${selectedModelKey}/models/input_models`);
+  }
+
+  // Also check all paths that contain /models/input_models as fallback
+  possiblePaths.push(...Object.keys(window.katapultModelAttributesData)
+    .filter(path => path.includes('/models/input_models'))
+    .sort((a, b) => {
+      // Prioritize paths matching selected model
+      const aMatch = selectedModelKey && a.includes(selectedModelKey);
+      const bMatch = selectedModelKey && b.includes(selectedModelKey);
+      if (aMatch && !bMatch) return -1;
+      if (bMatch && !aMatch) return 1;
+      return 0;
+    }));
+
   for (const path of possiblePaths) {
     if (window.katapultModelAttributesData[path]) {
       inputModelsData = window.katapultModelAttributesData[path];
@@ -413,6 +501,175 @@ function processAttributesData(attributesData) {
     }
   }
   
+  // Find the selected model's subscribed catalog module to get input_model_groups and trace_models
+  // Each model can extend a different base catalog
+  let inputModelGroups = null;
+  let traceModels = null;
+  let activeCatalogName = null;
+
+  // Step 1: Find which catalog modules the selected model is subscribed to
+  const subscribedModules = [];
+
+  // Prioritize the selected model's subscription path
+  const subscriptionPaths = [];
+  if (selectedModelKey) {
+    subscriptionPaths.push(`photoheight/company_space/${selectedModelKey}/subscription/modules`);
+  }
+  // Also check all subscription paths as fallback
+  subscriptionPaths.push(...Object.keys(window.katapultModelAttributesData)
+    .filter(path => path.includes('/subscription/modules')));
+
+  for (const path of subscriptionPaths) {
+    const modules = window.katapultModelAttributesData[path];
+    if (modules && typeof modules === 'object') {
+      for (const [moduleName, enabled] of Object.entries(modules)) {
+        if (enabled === true && !subscribedModules.includes(moduleName)) {
+          subscribedModules.push(moduleName);
+        }
+      }
+      // If we found modules from the selected model's path, prioritize those
+      if (selectedModelKey && path.includes(selectedModelKey)) {
+        break;
+      }
+    }
+  }
+
+  // Step 2: Find catalog data that matches subscribed modules
+  // The catalog data may be deeply nested under a single path like `photoheight/catalogs`
+  // We need to recursively search through it to find input_model_groups and trace_models
+
+  // Helper function to recursively find input_model_groups and trace_models in nested objects
+  function findCatalogData(obj, catalogPath = []) {
+    if (!obj || typeof obj !== 'object') return null;
+
+    const results = [];
+
+    // Check if this object directly contains what we need
+    if (obj.input_model_groups || obj.trace_models) {
+      results.push({
+        catalogName: catalogPath.join('/'),
+        inputModelGroups: obj.input_model_groups || null,
+        traceModels: obj.trace_models || null
+      });
+    }
+
+    // Check if there's a 'models' sub-object that contains what we need
+    if (obj.models && typeof obj.models === 'object') {
+      if (obj.models.input_model_groups || obj.models.trace_models) {
+        results.push({
+          catalogName: catalogPath.join('/'),
+          inputModelGroups: obj.models.input_model_groups || null,
+          traceModels: obj.models.trace_models || null
+        });
+      }
+    }
+
+    // Recursively search through all object properties
+    for (const [key, value] of Object.entries(obj)) {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        // Skip certain keys that are not catalog names
+        if (key.startsWith('_') || key === 'models') continue;
+
+        const nestedResults = findCatalogData(value, [...catalogPath, key]);
+        if (nestedResults && nestedResults.length > 0) {
+          results.push(...nestedResults);
+        }
+      }
+    }
+
+    return results;
+  }
+
+  // First, check for specific catalog paths
+  const catalogPaths = Object.keys(window.katapultModelAttributesData)
+    .filter(path => path.includes('catalogs'))
+    .sort((a, b) => b.length - a.length); // Longer paths first (more specific)
+
+  const allFoundCatalogs = [];
+
+  for (const path of catalogPaths) {
+    const pathData = window.katapultModelAttributesData[path];
+    if (!pathData || typeof pathData !== 'object') continue;
+
+    // Recursively search through this catalog data
+    const foundCatalogs = findCatalogData(pathData, [path.split('/').pop() || 'catalogs']);
+    if (foundCatalogs && foundCatalogs.length > 0) {
+      allFoundCatalogs.push(...foundCatalogs);
+    }
+  }
+
+  // Sort by preference: subscribed modules first, then by name length (more specific first)
+  allFoundCatalogs.sort((a, b) => {
+    const aSubscribed = subscribedModules.some(mod =>
+      a.catalogName.includes(mod) || mod.includes(a.catalogName.split('/').pop())
+    );
+    const bSubscribed = subscribedModules.some(mod =>
+      b.catalogName.includes(mod) || mod.includes(b.catalogName.split('/').pop())
+    );
+    if (aSubscribed && !bSubscribed) return -1;
+    if (bSubscribed && !aSubscribed) return 1;
+    return b.catalogName.length - a.catalogName.length;
+  });
+
+  // Pick the best catalog data
+  for (const catalog of allFoundCatalogs) {
+    if (catalog.inputModelGroups && !inputModelGroups) {
+      inputModelGroups = catalog.inputModelGroups;
+      activeCatalogName = catalog.catalogName;
+    }
+    if (catalog.traceModels && !traceModels) {
+      traceModels = catalog.traceModels;
+    }
+    if (inputModelGroups && traceModels) {
+      break;
+    }
+  }
+
+  // Fallback: Check for input_model_groups and trace_models directly alongside input_models
+  // They might be in the same company_space path rather than in catalogs
+  if (!inputModelGroups || !traceModels) {
+    for (const [path, data] of Object.entries(window.katapultModelAttributesData)) {
+      if (path.includes('/models/input_model_groups') && !inputModelGroups) {
+        inputModelGroups = data;
+        activeCatalogName = 'model-direct';
+      }
+      if (path.includes('/models/trace_models') && !traceModels) {
+        traceModels = data;
+      }
+    }
+  }
+
+  // Additional fallback: Look for a single "catalogs" or "models" object that contains everything
+  if (!inputModelGroups || !traceModels) {
+    for (const [path, data] of Object.entries(window.katapultModelAttributesData)) {
+      if (data && typeof data === 'object') {
+        // Check if this object directly contains input_model_groups or trace_models
+        if (data.input_model_groups && !inputModelGroups) {
+          inputModelGroups = data.input_model_groups;
+          activeCatalogName = path.split('/').pop() || 'direct';
+        }
+        if (data.trace_models && !traceModels) {
+          traceModels = data.trace_models;
+        }
+        // Also check under 'models' sub-key
+        if (data.models && typeof data.models === 'object') {
+          if (data.models.input_model_groups && !inputModelGroups) {
+            inputModelGroups = data.models.input_model_groups;
+            activeCatalogName = path.split('/').pop() || 'nested';
+          }
+          if (data.models.trace_models && !traceModels) {
+            traceModels = data.models.trace_models;
+          }
+        }
+      }
+    }
+  }
+
+  // Store for later use
+  window.katapultInputModelGroups = inputModelGroups;
+  window.katapultTraceModels = traceModels;
+  window.katapultActiveCatalog = activeCatalogName;
+
   if (inputModelsData && typeof inputModelsData === 'object') {
 
     // Extract nested attribute structures from input_models
@@ -423,6 +680,75 @@ function processAttributesData(attributesData) {
           nestedFields: modelData._attributes,
           elementType: modelData.element_type
         };
+      }
+    });
+
+    // Extract pole annotation types (element_type: 'point') from input_models
+    // NO HARDCODING - everything comes from the catalog data dynamically
+    window.katapultPoleAnnotationTypes = [];
+
+    // Build a lookup for shortcuts from input_model_groups.Measure
+    const measureGroupShortcuts = {};
+    if (inputModelGroups && inputModelGroups.Measure) {
+      Object.entries(inputModelGroups.Measure).forEach(([groupKey, groupData]) => {
+        if (groupKey.startsWith('_')) return; // Skip meta keys like _priority
+        // Convert Pascal_Case to snake_case for matching
+        const snakeKey = groupKey.toLowerCase().replace(/_/g, '');
+        if (groupData && groupData._shortcut !== undefined) {
+          measureGroupShortcuts[snakeKey] = groupData._shortcut;
+        }
+      });
+    }
+
+    // Build attribute mappings from trace_models
+    // trace_models links _trace_type to attributes (e.g., cable -> {cable_type: true, company: true})
+    const traceTypeAttributes = {};
+    if (traceModels) {
+      Object.entries(traceModels).forEach(([traceType, traceData]) => {
+        if (traceData && traceData.attributes) {
+          traceTypeAttributes[traceType] = Object.keys(traceData.attributes);
+        }
+      });
+    }
+
+    Object.entries(inputModelsData).forEach(([key, modelData]) => {
+      if (modelData && typeof modelData === 'object' && modelData.element_type === 'point') {
+        // Skip calibration types - they're for image calibration, not pole annotations
+        if (key.includes('calibration')) {
+          return;
+        }
+
+        // Format display name from key
+        const displayName = key
+          .replace(/_/g, ' ')
+          .split(' ')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(' ');
+
+        // Get shortcut from input_model_groups (preferred) or input_model itself
+        const snakeKey = key.replace(/_/g, '');
+        let shortcut = measureGroupShortcuts[snakeKey] ||
+                       modelData.shortcut ||
+                       modelData._shortcut ||
+                       modelData.hotkey ||
+                       null;
+
+        // Get attributes from trace_models using _trace_type
+        const traceType = modelData._trace_type;
+        const traceAttributes = traceType ? traceTypeAttributes[traceType] || [] : [];
+
+        window.katapultPoleAnnotationTypes.push({
+          key: key,
+          displayName: displayName,
+          shortcut: shortcut,
+          traceType: traceType,
+          traceAttributes: traceAttributes,  // Attributes from trace_models (e.g., ['cable_type', 'company'])
+          rawAttributes: modelData._attributes || {},
+          allowedChildren: modelData.allowed_children || null,
+          color: modelData._color || null,
+          helpText: modelData._help_text || null,
+          originalData: modelData
+        });
       }
     });
 
