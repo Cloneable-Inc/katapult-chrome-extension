@@ -2207,7 +2207,8 @@ class ImportInterface {
     });
   }
 
-  // Build pole annotations data for export
+  // Build pole annotations data for export with full metadata for Cloneable oneOf types
+  // All values use RAW names for Katapult API compatibility
   buildPoleAnnotationsExport() {
     const exportData = [];
     const definitions = this.poleAnnotationDefinitions || {};
@@ -2218,12 +2219,30 @@ class ImportInterface {
       const categoryDef = definitions[categoryKey];
       if (!categoryDef) continue;
 
+      // Build primary attribute metadata with picklist options
+      const primaryAttrMeta = categoryDef.primaryAttribute
+        ? this.buildAttributeMetadata(categoryDef.primaryAttribute)
+        : null;
+
+      // Build company attribute metadata if included
+      const companyAttrMeta = categorySelection.includeCompany
+        ? this.buildAttributeMetadata('company')
+        : null;
+
       const categoryExport = {
-        annotationType: categoryKey,
+        // Element type (raw) - used in API element_type field
+        elementType: categoryKey,
         displayName: categoryDef.displayName,
         shortcut: categoryDef.shortcut || null,
-        primaryAttribute: categoryDef.primaryAttribute,
+        description: categoryDef.description || null,
+        traceType: categoryDef.traceType || null,
+
+        // Primary attribute with full metadata for oneOf creation
+        primaryAttribute: primaryAttrMeta,
         includeCompany: categorySelection.includeCompany || false,
+        companyAttribute: companyAttrMeta,
+
+        // Selected types map to oneOf variants in Cloneable
         selectedTypes: []
       };
 
@@ -2235,10 +2254,18 @@ class ImportInterface {
           if (!typeSelection.enabled) continue;
 
           const typeDef = categoryDef.types?.[typeKey];
+
+          // Build sub-attribute metadata if present
+          const subAttrMeta = typeDef?.subAttribute
+            ? this.buildAttributeMetadata(typeDef.subAttribute)
+            : null;
+
           const typeExport = {
-            value: typeKey,
+            value: typeKey,  // RAW value for API
             displayName: typeDef?.displayName || this.formatDisplayName(typeKey),
-            subAttribute: typeDef?.subAttribute || null,
+            category: typeDef?.category || null,
+            // Sub-attribute with full metadata for nested conditional
+            subAttribute: subAttrMeta,
             selectedSubValues: typeSelection.selectedValues || []
           };
 
@@ -2256,6 +2283,50 @@ class ImportInterface {
     }
 
     return exportData;
+  }
+
+  // Build attribute metadata for export - includes raw names and picklist options
+  buildAttributeMetadata(attrName) {
+    const attrDef = this.attributeDefinitions?.[attrName] ||
+                    window.contentScriptAttributes?.[attrName];
+    if (!attrDef) return null;
+
+    const metadata = {
+      name: attrName,  // RAW attribute name for API
+      displayName: this.formatDisplayName(attrName),
+      guiElement: attrDef.gui_element || 'text',
+      required: attrDef.required || false,
+      attributeTypes: Object.values(attrDef.attribute_types || {})
+    };
+
+    // Include picklist options if available - these become enum values in Cloneable
+    if (attrDef.picklists && Object.keys(attrDef.picklists).length > 0) {
+      metadata.options = [];
+      metadata.optionsByCategory = {};
+
+      for (const [category, items] of Object.entries(attrDef.picklists)) {
+        const categoryOptions = [];
+
+        for (const item of Object.values(items)) {
+          const rawValue = typeof item === 'object' ? (item.value || item.name || item) : item;
+          const displayValue = typeof item === 'object' ? (item.display_name || item.name || rawValue) : rawValue;
+
+          // Add to flat options array
+          metadata.options.push({
+            value: rawValue,  // RAW value for API
+            displayName: displayValue,
+            category: category
+          });
+
+          // Add to category grouping
+          categoryOptions.push(rawValue);
+        }
+
+        metadata.optionsByCategory[category] = categoryOptions;
+      }
+    }
+
+    return metadata;
   }
 
   // Substring search function - search term must appear as contiguous substring
