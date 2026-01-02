@@ -19,6 +19,11 @@ class ImportInterface {
     this.nestedAttributeStructures = {}; // Store nested attribute structures from input_models
     this.attributeDefinitions = null; // Store raw attribute definitions for picklist lookup
 
+    // Pole annotations state
+    this.selectedPoleAnnotations = {}; // { annotationType: { enabled, includeCompany, selectedTypes: {...} } }
+    this.poleAnnotationDefinitions = null; // Definitions loaded from WebSocket data
+    this.companyPicklistValues = []; // Company picklist values for shared attribute
+
     // Set global reference immediately
     window.importInterface = this;
 
@@ -29,6 +34,7 @@ class ImportInterface {
     // Load available attributes and classifications
     this.loadAttributeSchema();
     this.loadPhotoClassifications();
+    this.loadPoleAnnotationDefinitions();
   }
 
   resetState() {
@@ -46,9 +52,12 @@ class ImportInterface {
     
     // Clear image attachments
     this.imageAttachments = {};
-    
-    // Note: We keep availableAttributes and photoClassifications as they are data, not selections
-    
+
+    // Clear pole annotation selections
+    this.selectedPoleAnnotations = {};
+
+    // Note: We keep availableAttributes, photoClassifications, and poleAnnotationDefinitions as they are data, not selections
+
     // Reset any UI state
     this.parseRetryCount = 0;
     
@@ -780,10 +789,18 @@ class ImportInterface {
       // For group types, map nested field to actual attribute definition
       if (isGroupType) {
         const groupItems = Object.values(parentAttrDef.group_items);
-        const referencedAttrName = groupItems.find(item => item.includes(name));
+        // Handle both string values and object values (e.g., { value: 'attr_name' })
+        const referencedAttrName = groupItems.find(item => {
+          const itemStr = typeof item === 'string' ? item : (item?.value || item?.name || String(item));
+          return itemStr && itemStr.includes && itemStr.includes(name);
+        });
+        // Extract the actual attribute name if it's an object
+        const attrNameToLookup = typeof referencedAttrName === 'string'
+          ? referencedAttrName
+          : (referencedAttrName?.value || referencedAttrName?.name || referencedAttrName);
 
-        if (referencedAttrName && this.attributeDefinitions[referencedAttrName]) {
-          const referencedAttr = this.attributeDefinitions[referencedAttrName];
+        if (attrNameToLookup && this.attributeDefinitions[attrNameToLookup]) {
+          const referencedAttr = this.attributeDefinitions[attrNameToLookup];
           actualGuiElement = referencedAttr.gui_element || actualGuiElement;
         }
       }
@@ -937,6 +954,172 @@ class ImportInterface {
     }
   }
 
+  // Load pole annotation definitions from WebSocket data
+  loadPoleAnnotationDefinitions() {
+    const attrs = window.contentScriptAttributes || this.attributeDefinitions || {};
+
+    // Find photo attributes with picklists
+    const photoAttrs = {};
+    for (const [name, defn] of Object.entries(attrs)) {
+      const attrTypes = defn.attribute_types || {};
+      const types = Object.values(attrTypes);
+      if (types.includes('photo') && defn.picklists) {
+        photoAttrs[name] = defn;
+      }
+    }
+
+    // Build the annotation definition structure
+    this.poleAnnotationDefinitions = this.buildAnnotationTree(photoAttrs);
+  }
+
+  // Build annotation tree dynamically from input_models data
+  // NO HARDCODING - everything comes from the catalog data
+  buildAnnotationTree(photoAttrs) {
+    const definitions = {};
+
+    // Get dynamically captured pole annotation types (passed from inject.js via postMessage)
+    // Use content script context variable, not page context
+    const dynamicAnnotationTypes = window.contentScriptPoleAnnotationTypes || [];
+
+    // Check if company is a photo attribute (determines if annotation types can have company)
+    const companyIsPhotoAttr = photoAttrs.company &&
+      this.isPhotoAttribute(photoAttrs.company);
+
+    if (dynamicAnnotationTypes.length > 0) {
+      // Build definitions from dynamic data
+      for (const annotationType of dynamicAnnotationTypes) {
+        const key = annotationType.key;
+        const traceAttributes = annotationType.traceAttributes || [];
+
+        // Dynamically find the primary attribute for this annotation type
+        // Uses trace_models data when available, falls back to naming convention
+        const primaryAttr = this.findPrimaryAttribute(key, photoAttrs, traceAttributes);
+
+        // Determine if this type has company attribute from trace_models
+        // Falls back to checking if company is a photo attr and this type has a primary attr
+        const hasCompany = this.hasCompanyFromTrace(traceAttributes) ||
+                          (companyIsPhotoAttr && primaryAttr !== null);
+
+        definitions[key] = {
+          displayName: annotationType.displayName,
+          shortcut: annotationType.shortcut,
+          description: annotationType.helpText || '',
+          primaryAttribute: primaryAttr,
+          hasCompanyAttribute: hasCompany,
+          traceType: annotationType.traceType,
+          allowedChildren: annotationType.allowedChildren,
+          types: {}
+        };
+
+        // Populate types from the primary attribute's picklist if available
+        if (primaryAttr && photoAttrs[primaryAttr] && photoAttrs[primaryAttr].picklists) {
+          for (const [groupName, group] of Object.entries(photoAttrs[primaryAttr].picklists)) {
+            for (const [idx, item] of Object.entries(group)) {
+              if (item && item.value) {
+                const typeKey = item.value;
+                const callAttrs = item._call ? Object.values(item._call) : [];
+                definitions[key].types[typeKey] = {
+                  displayName: this.formatDisplayName(typeKey),
+                  category: groupName !== 'default' ? groupName : null,
+                  subAttribute: callAttrs[0] || null,
+                  subAttributeOptions: callAttrs[0] ? this.getPicklistValues(photoAttrs, callAttrs[0]) : []
+                };
+              }
+            }
+          }
+        }
+      }
+    }
+    // If no dynamic data, definitions will be empty and UI shows "No data available"
+
+    // Store company picklist values for use in UI (not as separate annotation type)
+    if (photoAttrs.company && photoAttrs.company.picklists) {
+      this.companyPicklistValues = [];
+      for (const [groupName, group] of Object.entries(photoAttrs.company.picklists)) {
+        for (const [idx, item] of Object.entries(group)) {
+          if (item && item.value) {
+            this.companyPicklistValues.push({
+              value: item.value,
+              category: groupName
+            });
+          }
+        }
+      }
+    }
+
+    return definitions;
+  }
+
+  // Dynamically find the primary attribute for an annotation type
+  // Uses trace_models data when available, falls back to naming convention
+  findPrimaryAttribute(annotationType, photoAttrs, traceAttributes) {
+    // First check trace_models data (most authoritative source)
+    // traceAttributes is an array like ['cable_type', 'company'] from trace_models
+    if (traceAttributes && traceAttributes.length > 0) {
+      // Find the first attribute that's a dropdown with picklists (the primary selection attribute)
+      // Skip 'company' as that's a shared attribute, not the primary
+      for (const attrName of traceAttributes) {
+        if (attrName === 'company') continue;
+        if (photoAttrs[attrName] &&
+            this.isPhotoAttribute(photoAttrs[attrName]) &&
+            photoAttrs[attrName].gui_element === 'dropdown') {
+          return attrName;
+        }
+      }
+    }
+
+    // Fallback: Try direct match by naming convention: {type}_type
+    const directMatch = `${annotationType}_type`;
+    if (photoAttrs[directMatch] && this.isPhotoAttribute(photoAttrs[directMatch])) {
+      return directMatch;
+    }
+
+    // No primary attribute found - this annotation type has no sub-options
+    return null;
+  }
+
+  // Check if trace_models indicates this annotation type has company attribute
+  hasCompanyFromTrace(traceAttributes) {
+    return traceAttributes && traceAttributes.includes('company');
+  }
+
+  // Check if an attribute definition includes 'photo' in its attribute_types
+  isPhotoAttribute(attrDef) {
+    if (!attrDef || !attrDef.attribute_types) return false;
+    const types = attrDef.attribute_types;
+    if (Array.isArray(types)) {
+      return types.includes('photo');
+    }
+    if (typeof types === 'object') {
+      return Object.values(types).includes('photo');
+    }
+    return types === 'photo';
+  }
+
+  // Helper to get picklist values for a sub-attribute
+  getPicklistValues(photoAttrs, attrName) {
+    const attr = photoAttrs[attrName];
+    if (!attr || !attr.picklists) return [];
+
+    const values = [];
+    for (const [groupName, group] of Object.entries(attr.picklists)) {
+      for (const [idx, item] of Object.entries(group)) {
+        if (item && item.value) {
+          values.push(item.value);
+        }
+      }
+    }
+    return values;
+  }
+
+  // Helper to format display names (convert snake_case to Title Case)
+  formatDisplayName(str) {
+    return str
+      .split('_')
+      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
+  }
+
   // REMOVED: No longer creating sample data - interface must show only real parsed WebSocket data
 
   showProcessingData() {
@@ -1076,13 +1259,26 @@ class ImportInterface {
             <div id="node-configurations"></div>
             <div class="step-actions">
               <button class="btn-secondary" id="back-to-selection">← Back to Selection</button>
+              <button class="btn-primary" id="proceed-to-annotations">Pole Annotations →</button>
+            </div>
+          </div>
+
+          <!-- Step 3: Pole Annotations -->
+          <div class="import-section" id="pole-annotations-section" style="display: none;">
+            <h3 data-step="3">Pole Annotations</h3>
+            <p class="step-description">Select annotation types for pole images (equipment, guying, wires, etc.)</p>
+            <div id="pole-annotations-content">
+              <!-- Rendered dynamically by renderPoleAnnotationsContent() -->
+            </div>
+            <div class="step-actions">
+              <button class="btn-secondary" id="back-to-configure">← Back to Attributes</button>
               <button class="btn-primary" id="proceed-to-review">Review & Export →</button>
             </div>
           </div>
 
-          <!-- Step 3: Review & Export -->
+          <!-- Step 4: Review & Export -->
           <div class="import-section" id="export-review" style="display: none;">
-            <h3 data-step="3">Review & Export</h3>
+            <h3 data-step="4">Review & Export</h3>
             <p class="step-description">Review your configuration and export to Cloneable</p>
             <div class="export-summary" id="export-summary"></div>
             <div class="environment-selector" style="margin: 20px 0;">
@@ -1096,7 +1292,7 @@ class ImportInterface {
               </label>
             </div>
             <div class="step-actions">
-              <button class="btn-secondary" id="back-to-configure">← Back to Configure</button>
+              <button class="btn-secondary" id="back-to-annotations">← Back to Annotations</button>
               <button class="btn-secondary" id="preview-json-btn">Preview JSON</button>
               <button class="btn-primary" id="export-data-btn">🚀 Send to Cloneable</button>
             </div>
@@ -1164,19 +1360,31 @@ class ImportInterface {
     modal.querySelector('#configure-attributes-btn').addEventListener('click', () => {
       self.showConfigureStep(modal);
     });
-    
+
     modal.querySelector('#back-to-selection').addEventListener('click', () => {
       self.showStep(modal, 'node-selection');
     });
-    
-    modal.querySelector('#proceed-to-review').addEventListener('click', () => {
-      self.showStep(modal, 'export-review');
+
+    // Step 2 → Step 3 (Pole Annotations)
+    modal.querySelector('#proceed-to-annotations').addEventListener('click', () => {
+      self.showPoleAnnotationsStep(modal);
     });
-    
+
+    // Step 3 → Step 2 (back to configure)
     modal.querySelector('#back-to-configure').addEventListener('click', () => {
       self.showStep(modal, 'configure-section');
     });
-    
+
+    // Step 3 → Step 4 (review)
+    modal.querySelector('#proceed-to-review').addEventListener('click', () => {
+      self.showStep(modal, 'export-review');
+    });
+
+    // Step 4 → Step 3 (back to annotations)
+    modal.querySelector('#back-to-annotations').addEventListener('click', () => {
+      self.showStep(modal, 'pole-annotations-section');
+    });
+
     // Preview JSON button
     modal.querySelector('#preview-json-btn').addEventListener('click', () => {
       self.previewExport();
@@ -1674,11 +1882,453 @@ class ImportInterface {
   }
 
   showConfigureStep(modal) {
+    // Ensure processed attributes are loaded from content script storage
+    // This handles the case where data arrived before importInterface was ready
+    this.ensureAttributesLoaded();
+
     this.showStep(modal, 'configure-section');
     this.renderAllConfigurations();
     // Event listeners will be attached by renderAllConfigurations after DOM is ready
   }
-  
+
+  // Load attributes from content script storage if not already loaded
+  ensureAttributesLoaded() {
+    // Check if we need to load from content script storage
+    const currentPicklists = this.availableAttributes?.withPicklists?.length || 0;
+    const currentFreeform = this.availableAttributes?.withoutPicklists?.length || 0;
+    const storedData = window.contentScriptProcessedAttributes;
+
+    if (storedData && (currentPicklists === 0 && currentFreeform === 0)) {
+      // Load from stored data
+      if (storedData.withPicklists && storedData.withPicklists.length > 0) {
+        this.availableAttributes.withPicklists = storedData.withPicklists;
+      }
+      if (storedData.withoutPicklists && storedData.withoutPicklists.length > 0) {
+        this.availableAttributes.withoutPicklists = storedData.withoutPicklists;
+      }
+      this.deduplicateAttributes();
+    }
+
+    // Also ensure node types are loaded
+    if (window.contentScriptNodeTypes && window.contentScriptNodeTypes.length > 0) {
+      const nodeTypes = window.contentScriptNodeTypes;
+      this.availableAttributes.nodeTypes.categories = [...new Set(nodeTypes.map(nt => nt.category))];
+      this.availableAttributes.nodeTypes.values = {};
+      nodeTypes.forEach(nt => {
+        if (!this.availableAttributes.nodeTypes.values[nt.category]) {
+          this.availableAttributes.nodeTypes.values[nt.category] = [];
+        }
+        this.availableAttributes.nodeTypes.values[nt.category].push(nt.cleanName || nt.displayName);
+      });
+    }
+
+    // Also ensure connection types are loaded
+    if (window.contentScriptConnectionTypes && window.contentScriptConnectionTypes.length > 0) {
+      const connTypes = window.contentScriptConnectionTypes;
+      this.availableAttributes.connectionTypes.categories = [...new Set(connTypes.map(ct => ct.category))];
+      this.availableAttributes.connectionTypes.values = {};
+      connTypes.forEach(ct => {
+        if (!this.availableAttributes.connectionTypes.values[ct.category]) {
+          this.availableAttributes.connectionTypes.values[ct.category] = [];
+        }
+        this.availableAttributes.connectionTypes.values[ct.category].push(ct.cleanName || ct.displayName);
+      });
+    }
+  }
+
+  showPoleAnnotationsStep(modal) {
+    // Reload definitions in case data was updated
+    this.loadPoleAnnotationDefinitions();
+
+    this.showStep(modal, 'pole-annotations-section');
+    this.renderPoleAnnotationsContent(modal);
+  }
+
+  renderPoleAnnotationsContent(modal) {
+    const container = modal.querySelector('#pole-annotations-content');
+    if (!container) return;
+
+    const definitions = this.poleAnnotationDefinitions || {};
+
+    // Check if we have any definitions
+    if (Object.keys(definitions).length === 0) {
+      container.innerHTML = `
+        <div class="no-data-message" style="text-align: center; padding: 40px; color: #666;">
+          <div style="font-size: 48px; margin-bottom: 16px;">📋</div>
+          <h4>No Annotation Data Available</h4>
+          <p>Pole annotation definitions haven't been captured yet.<br>
+          Please make sure you've loaded a model in the Katapult editor.</p>
+        </div>
+      `;
+      return;
+    }
+
+    let html = '<div class="pole-annotations-list">';
+
+    // Render each annotation category (in order defined)
+    for (const [categoryKey, category] of Object.entries(definitions)) {
+      const isEnabled = this.selectedPoleAnnotations[categoryKey]?.enabled || false;
+      const includeCompany = this.selectedPoleAnnotations[categoryKey]?.includeCompany || false;
+      const types = category.types || {};
+      const hasTypes = Object.keys(types).length > 0;
+
+      // Build display name with shortcut
+      const shortcutDisplay = category.shortcut ? ` (${category.shortcut})` : '';
+      const displayName = `${category.displayName}${shortcutDisplay}`;
+
+      html += `
+        <div class="annotation-category" data-category="${categoryKey}">
+          <div class="annotation-category-header">
+            <label class="annotation-checkbox-label">
+              <input type="checkbox"
+                     class="annotation-category-checkbox"
+                     data-category="${categoryKey}"
+                     ${isEnabled ? 'checked' : ''}>
+              <span class="annotation-category-name">${displayName}</span>
+            </label>
+            <span class="annotation-category-description">${category.description || ''}</span>
+          </div>
+          <div class="annotation-types-container" style="${isEnabled ? '' : 'display: none;'}">
+      `;
+
+      // If this category has a primary attribute with types, render them
+      if (hasTypes) {
+        // Group types by category if they have one (for cable_type)
+        const typesByGroup = {};
+        for (const [typeKey, typeDefn] of Object.entries(types)) {
+          const groupName = typeDefn.category || 'default';
+          if (!typesByGroup[groupName]) {
+            typesByGroup[groupName] = [];
+          }
+          typesByGroup[groupName].push({ key: typeKey, ...typeDefn });
+        }
+
+        // Render types
+        for (const [groupName, groupTypes] of Object.entries(typesByGroup)) {
+          if (groupName !== 'default') {
+            html += `<div class="annotation-type-group"><span class="group-label">${this.formatDisplayName(groupName)}</span>`;
+          }
+
+          for (const typeDefn of groupTypes) {
+            const typeKey = typeDefn.key;
+            const selectedTypes = this.selectedPoleAnnotations[categoryKey]?.selectedTypes || {};
+            const isTypeEnabled = selectedTypes[typeKey]?.enabled || false;
+            const subAttr = typeDefn.subAttribute;
+            const subOptions = typeDefn.subAttributeOptions || [];
+
+            html += `
+              <div class="annotation-type-item" data-type="${typeKey}">
+                <label class="annotation-type-checkbox-label">
+                  <input type="checkbox"
+                         class="annotation-type-checkbox"
+                         data-category="${categoryKey}"
+                         data-type="${typeKey}"
+                         ${isTypeEnabled ? 'checked' : ''}
+                         ${!isEnabled ? 'disabled' : ''}>
+                  <span class="annotation-type-name">${typeDefn.displayName}</span>
+                </label>
+            `;
+
+            // Render sub-attribute options if this type has them
+            if (subAttr && subOptions.length > 0) {
+              const selectedSubValues = selectedTypes[typeKey]?.selectedValues || [];
+              html += `
+                <div class="annotation-sub-options" style="${isTypeEnabled ? '' : 'display: none;'}">
+                  <span class="sub-attr-label">${this.formatDisplayName(subAttr)}:</span>
+                  <div class="sub-options-grid">
+              `;
+
+              for (const optValue of subOptions) {
+                const isSubSelected = selectedSubValues.includes(optValue);
+                html += `
+                  <label class="sub-option-label">
+                    <input type="checkbox"
+                           class="annotation-sub-checkbox"
+                           data-category="${categoryKey}"
+                           data-type="${typeKey}"
+                           data-sub-attr="${subAttr}"
+                           data-value="${optValue}"
+                           ${isSubSelected ? 'checked' : ''}
+                           ${!isTypeEnabled ? 'disabled' : ''}>
+                    <span>${this.formatDisplayName(optValue)}</span>
+                  </label>
+                `;
+              }
+
+              html += `
+                  </div>
+                </div>
+              `;
+            }
+
+            html += `</div>`; // End annotation-type-item
+          }
+
+          if (groupName !== 'default') {
+            html += `</div>`; // End annotation-type-group
+          }
+        }
+      } else {
+        // No sub-types - show simple message
+        html += `
+          <div class="annotation-no-options">
+            <span class="no-options-text">No sub-options - height measurement only</span>
+          </div>
+        `;
+      }
+
+      // Add Company checkbox if this annotation type supports it
+      if (category.hasCompanyAttribute) {
+        html += `
+          <div class="annotation-shared-attributes">
+            <div class="shared-attr-divider"></div>
+            <label class="annotation-company-checkbox-label">
+              <input type="checkbox"
+                     class="annotation-company-checkbox"
+                     data-category="${categoryKey}"
+                     ${includeCompany ? 'checked' : ''}
+                     ${!isEnabled ? 'disabled' : ''}>
+              <span>Include company attribute</span>
+            </label>
+          </div>
+        `;
+      }
+
+      html += `
+          </div>
+        </div>
+      `; // End annotation-types-container and annotation-category
+    }
+
+    html += '</div>'; // End pole-annotations-list
+    container.innerHTML = html;
+
+    // Attach event listeners
+    this.attachPoleAnnotationListeners(modal);
+  }
+
+  attachPoleAnnotationListeners(modal) {
+    const self = this;
+
+    // Category checkboxes (enable/disable entire category)
+    modal.querySelectorAll('.annotation-category-checkbox').forEach(checkbox => {
+      checkbox.addEventListener('change', (e) => {
+        const category = e.target.dataset.category;
+        const enabled = e.target.checked;
+
+        // Initialize category if needed
+        if (!self.selectedPoleAnnotations[category]) {
+          self.selectedPoleAnnotations[category] = { enabled: false, selectedTypes: {}, includeCompany: false };
+        }
+        self.selectedPoleAnnotations[category].enabled = enabled;
+
+        // Show/hide types container
+        const container = e.target.closest('.annotation-category').querySelector('.annotation-types-container');
+        if (container) {
+          container.style.display = enabled ? '' : 'none';
+        }
+
+        // Enable/disable type checkboxes
+        const typeCheckboxes = e.target.closest('.annotation-category').querySelectorAll('.annotation-type-checkbox');
+        typeCheckboxes.forEach(cb => cb.disabled = !enabled);
+
+        // Enable/disable company checkbox
+        const companyCheckbox = e.target.closest('.annotation-category').querySelector('.annotation-company-checkbox');
+        if (companyCheckbox) {
+          companyCheckbox.disabled = !enabled;
+        }
+      });
+    });
+
+    // Type checkboxes
+    modal.querySelectorAll('.annotation-type-checkbox').forEach(checkbox => {
+      checkbox.addEventListener('change', (e) => {
+        const category = e.target.dataset.category;
+        const type = e.target.dataset.type;
+        const enabled = e.target.checked;
+
+        // Initialize structures
+        if (!self.selectedPoleAnnotations[category]) {
+          self.selectedPoleAnnotations[category] = { enabled: true, selectedTypes: {}, includeCompany: false };
+        }
+        if (!self.selectedPoleAnnotations[category].selectedTypes[type]) {
+          self.selectedPoleAnnotations[category].selectedTypes[type] = { enabled: false, selectedValues: [] };
+        }
+        self.selectedPoleAnnotations[category].selectedTypes[type].enabled = enabled;
+
+        // Show/hide sub-options
+        const subOptions = e.target.closest('.annotation-type-item').querySelector('.annotation-sub-options');
+        if (subOptions) {
+          subOptions.style.display = enabled ? '' : 'none';
+          // Enable/disable sub-checkboxes
+          subOptions.querySelectorAll('.annotation-sub-checkbox').forEach(cb => cb.disabled = !enabled);
+        }
+      });
+    });
+
+    // Sub-attribute checkboxes
+    modal.querySelectorAll('.annotation-sub-checkbox').forEach(checkbox => {
+      checkbox.addEventListener('change', (e) => {
+        const category = e.target.dataset.category;
+        const type = e.target.dataset.type;
+        const value = e.target.dataset.value;
+        const checked = e.target.checked;
+
+        // Initialize structures
+        if (!self.selectedPoleAnnotations[category]) {
+          self.selectedPoleAnnotations[category] = { enabled: true, selectedTypes: {}, includeCompany: false };
+        }
+        if (!self.selectedPoleAnnotations[category].selectedTypes[type]) {
+          self.selectedPoleAnnotations[category].selectedTypes[type] = { enabled: true, selectedValues: [] };
+        }
+
+        const selectedValues = self.selectedPoleAnnotations[category].selectedTypes[type].selectedValues;
+        if (checked && !selectedValues.includes(value)) {
+          selectedValues.push(value);
+        } else if (!checked) {
+          const idx = selectedValues.indexOf(value);
+          if (idx > -1) selectedValues.splice(idx, 1);
+        }
+      });
+    });
+
+    // Company checkbox (shared attribute within annotation types)
+    modal.querySelectorAll('.annotation-company-checkbox').forEach(checkbox => {
+      checkbox.addEventListener('change', (e) => {
+        const category = e.target.dataset.category;
+        const checked = e.target.checked;
+
+        // Initialize category if needed
+        if (!self.selectedPoleAnnotations[category]) {
+          self.selectedPoleAnnotations[category] = { enabled: true, selectedTypes: {}, includeCompany: false };
+        }
+        self.selectedPoleAnnotations[category].includeCompany = checked;
+      });
+    });
+  }
+
+  // Build pole annotations data for export with full metadata for Cloneable oneOf types
+  // All values use RAW names for Katapult API compatibility
+  buildPoleAnnotationsExport() {
+    const exportData = [];
+    const definitions = this.poleAnnotationDefinitions || {};
+
+    for (const [categoryKey, categorySelection] of Object.entries(this.selectedPoleAnnotations)) {
+      if (!categorySelection.enabled) continue;
+
+      const categoryDef = definitions[categoryKey];
+      if (!categoryDef) continue;
+
+      // Build primary attribute metadata with picklist options
+      const primaryAttrMeta = categoryDef.primaryAttribute
+        ? this.buildAttributeMetadata(categoryDef.primaryAttribute)
+        : null;
+
+      // Build company attribute metadata if included
+      const companyAttrMeta = categorySelection.includeCompany
+        ? this.buildAttributeMetadata('company')
+        : null;
+
+      const categoryExport = {
+        // Element type (raw) - used in API element_type field
+        elementType: categoryKey,
+        displayName: categoryDef.displayName,
+        shortcut: categoryDef.shortcut || null,
+        description: categoryDef.description || null,
+        traceType: categoryDef.traceType || null,
+
+        // Primary attribute with full metadata for oneOf creation
+        primaryAttribute: primaryAttrMeta,
+        includeCompany: categorySelection.includeCompany || false,
+        companyAttribute: companyAttrMeta,
+
+        // Selected types map to oneOf variants in Cloneable
+        selectedTypes: []
+      };
+
+      // Process selected types within this category
+      const hasTypes = Object.keys(categoryDef.types || {}).length > 0;
+
+      if (hasTypes) {
+        for (const [typeKey, typeSelection] of Object.entries(categorySelection.selectedTypes || {})) {
+          if (!typeSelection.enabled) continue;
+
+          const typeDef = categoryDef.types?.[typeKey];
+
+          // Build sub-attribute metadata if present
+          const subAttrMeta = typeDef?.subAttribute
+            ? this.buildAttributeMetadata(typeDef.subAttribute)
+            : null;
+
+          const typeExport = {
+            value: typeKey,  // RAW value for API
+            displayName: typeDef?.displayName || this.formatDisplayName(typeKey),
+            category: typeDef?.category || null,
+            // Sub-attribute with full metadata for nested conditional
+            subAttribute: subAttrMeta,
+            selectedSubValues: typeSelection.selectedValues || []
+          };
+
+          categoryExport.selectedTypes.push(typeExport);
+        }
+
+        // Only include category if it has at least one selected type
+        if (categoryExport.selectedTypes.length > 0) {
+          exportData.push(categoryExport);
+        }
+      } else {
+        // Category has no sub-types (like Pole Top, Arm) - include it directly
+        exportData.push(categoryExport);
+      }
+    }
+
+    return exportData;
+  }
+
+  // Build attribute metadata for export - includes raw names and picklist options
+  buildAttributeMetadata(attrName) {
+    const attrDef = this.attributeDefinitions?.[attrName] ||
+                    window.contentScriptAttributes?.[attrName];
+    if (!attrDef) return null;
+
+    const metadata = {
+      name: attrName,  // RAW attribute name for API
+      displayName: this.formatDisplayName(attrName),
+      guiElement: attrDef.gui_element || 'text',
+      required: attrDef.required || false,
+      attributeTypes: Object.values(attrDef.attribute_types || {})
+    };
+
+    // Include picklist options if available - these become enum values in Cloneable
+    if (attrDef.picklists && Object.keys(attrDef.picklists).length > 0) {
+      metadata.options = [];
+      metadata.optionsByCategory = {};
+
+      for (const [category, items] of Object.entries(attrDef.picklists)) {
+        const categoryOptions = [];
+
+        for (const item of Object.values(items)) {
+          const rawValue = typeof item === 'object' ? (item.value || item.name || item) : item;
+          const displayValue = typeof item === 'object' ? (item.display_name || item.name || rawValue) : rawValue;
+
+          // Add to flat options array
+          metadata.options.push({
+            value: rawValue,  // RAW value for API
+            displayName: displayValue,
+            category: category
+          });
+
+          // Add to category grouping
+          categoryOptions.push(rawValue);
+        }
+
+        metadata.optionsByCategory[category] = categoryOptions;
+      }
+    }
+
+    return metadata;
+  }
+
   // Substring search function - search term must appear as contiguous substring
   fuzzyMatch(searchTerm, text) {
     if (!searchTerm) return true;
@@ -2809,10 +3459,18 @@ class ImportInterface {
             // For group types, map nested field to actual attribute definition
             if (isGroupType) {
               const groupItems = Object.values(parentAttrDef.group_items);
-              const referencedAttrName = groupItems.find(item => item.includes(fieldName));
+              // Handle both string values and object values (e.g., { value: 'attr_name' })
+              const referencedAttrName = groupItems.find(item => {
+                const itemStr = typeof item === 'string' ? item : (item?.value || item?.name || String(item));
+                return itemStr && itemStr.includes && itemStr.includes(fieldName);
+              });
+              // Extract the actual attribute name if it's an object
+              const attrNameToLookup = typeof referencedAttrName === 'string'
+                ? referencedAttrName
+                : (referencedAttrName?.value || referencedAttrName?.name || referencedAttrName);
 
-              if (referencedAttrName && this.attributeDefinitions[referencedAttrName]) {
-                const referencedAttr = this.attributeDefinitions[referencedAttrName];
+              if (attrNameToLookup && this.attributeDefinitions[attrNameToLookup]) {
+                const referencedAttr = this.attributeDefinitions[attrNameToLookup];
                 actualGuiElement = referencedAttr.gui_element || actualGuiElement;
                 actualFieldDef = referencedAttr;
               }
@@ -2960,6 +3618,7 @@ class ImportInterface {
           visualizationRules: visualizationRules
         };
       }),
+      poleAnnotations: this.buildPoleAnnotationsExport(),
       summary: {
         dataTypeBreakdown: this.getDataTypeBreakdown(),
         totalAttributes: this.availableAttributes.withPicklists.length + this.availableAttributes.withoutPicklists.length,
@@ -3709,7 +4368,17 @@ window.addEventListener('message', (event) => {
     window.contentScriptModelData = event.data.modelData || {};
     window.contentScriptImageClassifications = event.data.imageClassifications || [];
     window.contentScriptNestedStructures = event.data.nestedAttributeStructures || {};
-    
+
+    // Store pole annotation data (passed from page context)
+    window.contentScriptPoleAnnotationTypes = event.data.poleAnnotationTypes || [];
+    window.contentScriptInputModelGroups = event.data.inputModelGroups || null;
+    window.contentScriptTraceModels = event.data.traceModels || null;
+    window.contentScriptSelectedModelKey = event.data.selectedModelKey || null;
+    window.contentScriptActiveCatalog = event.data.activeCatalog || null;
+
+    // Store processed attributes in content script context (in case importInterface doesn't exist yet)
+    window.contentScriptProcessedAttributes = event.data.processedAttributes || { withPicklists: [], withoutPicklists: [] };
+
     // Also store in the location that updateButtonStatus checks
     if (event.data.nodeTypes && event.data.nodeTypes.length > 0) {
       window.cloneableNodeTypes = event.data.nodeTypes;
@@ -3743,10 +4412,10 @@ window.addEventListener('message', (event) => {
     if (window.importInterface && event.data.imageClassifications && event.data.imageClassifications.length > 0) {
 
       window.importInterface.loadPhotoClassifications();
-      
+
       // Only re-render if we're on the configuration step AND we don't have classifications yet
       // This prevents re-rendering when data updates come in while user is selecting items
-      if (document.getElementById('configure-section') && 
+      if (document.getElementById('configure-section') &&
           document.getElementById('configure-section').classList.contains('active') &&
           document.querySelectorAll('.classification-option').length === 0) {
 
@@ -3754,6 +4423,11 @@ window.addEventListener('message', (event) => {
         // Re-attach event listeners after re-render
         window.importInterface.attachConfigurationEventListeners();
       }
+    }
+
+    // Reload pole annotation definitions when data is received
+    if (window.importInterface && event.data.poleAnnotationTypes && event.data.poleAnnotationTypes.length > 0) {
+      window.importInterface.loadPoleAnnotationDefinitions();
     }
     
     if (importInterface) {

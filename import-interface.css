@@ -1314,3 +1314,241 @@
 .environment-selector span {
   font-weight: 500;
 }
+
+/* Pole Annotations Step Styles */
+.pole-annotations-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.annotation-category {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.annotation-category-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  background: white;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.annotation-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.annotation-category-checkbox {
+  width: 18px;
+  height: 18px;
+  accent-color: #16a34a;
+  cursor: pointer;
+}
+
+.annotation-category-name {
+  font-size: 16px;
+  color: #1e293b;
+}
+
+.annotation-category-description {
+  font-size: 13px;
+  color: #64748b;
+  font-style: italic;
+}
+
+.annotation-types-container {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.annotation-type-group {
+  margin-bottom: 8px;
+}
+
+.annotation-type-group .group-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.annotation-type-item {
+  padding: 8px 0;
+  padding-left: 12px;
+  border-left: 2px solid transparent;
+  transition: all 0.2s ease;
+}
+
+.annotation-type-item:hover {
+  border-left-color: #16a34a;
+  background: rgba(22, 163, 74, 0.05);
+}
+
+.annotation-type-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.annotation-type-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: #16a34a;
+  cursor: pointer;
+}
+
+.annotation-type-checkbox:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.annotation-type-name {
+  font-size: 14px;
+  color: #334155;
+}
+
+.annotation-sub-options {
+  margin-top: 8px;
+  margin-left: 24px;
+  padding: 12px;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.sub-attr-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  margin-bottom: 8px;
+}
+
+.sub-options-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sub-option-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: #f1f5f9;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #475569;
+  transition: all 0.2s ease;
+}
+
+.sub-option-label:hover {
+  background: #e2e8f0;
+}
+
+.sub-option-label input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: #16a34a;
+  cursor: pointer;
+}
+
+.sub-option-label input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sub-option-label input[type="checkbox"]:disabled + span {
+  opacity: 0.5;
+}
+
+.annotation-sub-checkbox {
+  cursor: pointer;
+}
+
+/* Shared attributes (Company checkbox) within annotation types */
+.annotation-shared-attributes {
+  margin-top: 16px;
+  padding-top: 12px;
+}
+
+.shared-attr-divider {
+  height: 1px;
+  background: #e2e8f0;
+  margin-bottom: 12px;
+}
+
+.annotation-company-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f0fdf4;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #166534;
+  transition: all 0.2s ease;
+}
+
+.annotation-company-checkbox-label:hover {
+  background: #dcfce7;
+}
+
+.annotation-company-checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: #16a34a;
+  cursor: pointer;
+}
+
+.annotation-company-checkbox-label input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.annotation-company-checkbox-label input[type="checkbox"]:disabled + span {
+  opacity: 0.5;
+}
+
+/* Annotation types with no sub-options (like Pole Top, Arm) */
+.annotation-no-options {
+  padding: 16px;
+  text-align: center;
+}
+
+.no-options-text {
+  font-size: 13px;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* No data message */
+.no-data-message h4 {
+  margin: 0 0 8px 0;
+  font-size: 18px;
+  color: #1e293b;
+}
+
+.no-data-message p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+}
