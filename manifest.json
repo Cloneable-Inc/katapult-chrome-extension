@@ -5,7 +5,12 @@
   "description": "Export models from Katapult Pro to Cloneable",
   "permissions": [
     "activeTab",
-    "webRequest"
+    "webRequest",
+    "storage",
+    "scripting"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
   ],
   "host_permissions": [
     "https://katapultpro.com/*",
@@ -22,13 +27,13 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "inject.js", 
-        "inject-reconstructor.js", 
+        "inject.js",
+        "inject-reconstructor.js",
         "import-interface-content.js",
         "import-interface.css",
         "fallback-data.js"
       ],
-      "matches": ["https://katapultpro.com/*", "https://*.katapultpro.com/*"]
+      "matches": ["https://*/*"]
     }
   ],
   "action": {

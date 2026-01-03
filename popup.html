@@ -52,6 +52,80 @@
       background: #ccc;
       cursor: not-allowed;
     }
+    .domains-section {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid #e0e0e0;
+    }
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 8px;
+    }
+    .add-domain-btn {
+      background: #4CAF50;
+      color: white;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      width: 100%;
+    }
+    .add-domain-btn:hover {
+      background: #45a049;
+    }
+    .add-domain-btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+    .domain-list {
+      margin-top: 12px;
+    }
+    .domain-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 8px;
+      background: #f5f5f5;
+      border-radius: 4px;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+    .domain-name {
+      color: #333;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .domain-badge {
+      font-size: 10px;
+      color: #666;
+      background: #e0e0e0;
+      padding: 2px 6px;
+      border-radius: 3px;
+      margin-left: 6px;
+    }
+    .remove-btn {
+      background: #f44336;
+      color: white;
+      border: none;
+      padding: 3px 8px;
+      border-radius: 3px;
+      font-size: 10px;
+      cursor: pointer;
+      margin-left: 8px;
+    }
+    .remove-btn:hover {
+      background: #d32f2f;
+    }
+    .no-domains {
+      font-size: 11px;
+      color: #999;
+      font-style: italic;
+    }
   </style>
 </head>
 <body>
@@ -60,7 +134,17 @@
   <div class="status" id="status">
     Extension is ready
   </div>
-  
+
+  <div class="domains-section">
+    <div class="section-title">Custom Domains</div>
+    <button class="add-domain-btn" id="add-domain-btn">
+      Add Current Domain
+    </button>
+    <div class="domain-list" id="domain-list">
+      <!-- Domain list will be populated by JS -->
+    </div>
+  </div>
+
   <div class="debug-section">
     <button class="debug-btn" id="dump-websocket-btn" disabled>
       🔍 Download Raw WebSocket Data
@@ -70,6 +154,7 @@
     </div>
   </div>
   
+  <script src="domain-manager.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>
