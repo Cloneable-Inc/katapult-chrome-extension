@@ -4219,7 +4219,7 @@ function createExportButton() {
       const hasNodeTypes = window.cloneableNodeTypes && window.cloneableNodeTypes.length > 0;
       const hasConnectionTypes = window.contentScriptConnectionTypes && window.contentScriptConnectionTypes.length > 0;
       const hasAttributes = window.contentScriptAttributes && Object.keys(window.contentScriptAttributes).length > 0;
-      const hasImageClassifications = window.contentScriptImageClassifications && window.contentScriptImageClassifications.length > 0;
+      const hasImageClassifications = Array.isArray(window.contentScriptImageClassifications);
       
       if (!hasNodeTypes || !hasConnectionTypes || !hasAttributes || !hasImageClassifications) {
         alert('Data is still loading. Please wait for all model data to be captured.');
@@ -4460,7 +4460,7 @@ function updateButtonStatus() {
   const hasNodeTypes = window.cloneableNodeTypes && window.cloneableNodeTypes.length > 0;
   const hasConnectionTypes = window.contentScriptConnectionTypes && window.contentScriptConnectionTypes.length > 0;
   const hasAttributes = window.contentScriptAttributes && Object.keys(window.contentScriptAttributes).length > 0;
-  const hasImageClassifications = window.contentScriptImageClassifications && window.contentScriptImageClassifications.length > 0;
+  const hasImageClassifications = Array.isArray(window.contentScriptImageClassifications);
   
   // Data is considered fully loaded when we have all required data types
   const dataFullyLoaded = hasNodeTypes && hasConnectionTypes && hasAttributes && hasImageClassifications;
