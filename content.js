@@ -4835,36 +4835,30 @@ function checkCaptureStatus() {
 checkCaptureStatus();
 setInterval(checkCaptureStatus, 2000);
 
-// Check on initial load
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', checkAndInjectButton);
-} else {
-  checkAndInjectButton();
-}
-
-// Listen for URL changes
-window.addEventListener('hashchange', checkAndInjectButton);
-window.addEventListener('popstate', checkAndInjectButton);
-
-// Also listen for dynamic content changes
-const observer = new MutationObserver(() => {
-  clearTimeout(window.cloneableCheckTimeout);
-  window.cloneableCheckTimeout = setTimeout(checkAndInjectButton, 100);
-});
-
-// Start observing when document.body is available
-function startObserving() {
-  if (document.body) {
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-  } else {
-    setTimeout(startObserving, 100);
-  }
-}
-
-startObserving();
+// Floating button disabled — export is now handled via the extension popup
+// The button/modal UI (createExportButton, showAdvancedImportInterface) is kept
+// in the codebase for potential future use but no longer injected into the page.
+//
+// if (document.readyState === 'loading') {
+//   document.addEventListener('DOMContentLoaded', checkAndInjectButton);
+// } else {
+//   checkAndInjectButton();
+// }
+// window.addEventListener('hashchange', checkAndInjectButton);
+// window.addEventListener('popstate', checkAndInjectButton);
+//
+// const observer = new MutationObserver(() => {
+//   clearTimeout(window.cloneableCheckTimeout);
+//   window.cloneableCheckTimeout = setTimeout(checkAndInjectButton, 100);
+// });
+// function startObserving() {
+//   if (document.body) {
+//     observer.observe(document.body, { childList: true, subtree: true });
+//   } else {
+//     setTimeout(startObserving, 100);
+//   }
+// }
+// startObserving();
 
 // Debug function to check all data locations
 window.debugNodeTypes = function() {
