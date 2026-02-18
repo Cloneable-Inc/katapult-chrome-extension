@@ -13,13 +13,21 @@ const CONTENT_SCRIPT_CONFIG = {
   allFrames: false
 };
 
+// Cloneable bridge script configuration (for custom Cloneable domains)
+const BRIDGE_SCRIPT_CONFIG = {
+  js: ['cloneable-bridge.js'],
+  runAt: 'document_idle',
+  allFrames: false
+};
+
 // Web accessible resources that need to be available
 const WEB_RESOURCES = [
   'inject.js',
   'inject-reconstructor.js',
   'import-interface-content.js',
   'import-interface.css',
-  'fallback-data.js'
+  'fallback-data.js',
+  'cloneable-bridge.js'
 ];
 
 /**
@@ -196,6 +204,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     chrome.storage.local.get(['lastModelUrl'], (result) => {
       sendResponse(result);
     });
+    return true;
+  }
+
+  // Handle bridge script registration for custom Cloneable domains
+  if (message.type === 'REGISTER_BRIDGE') {
+    const domain = message.domain;
+    const scriptId = `bridge-script-${domain.replace(/[^a-zA-Z0-9]/g, '-')}`;
+    (async () => {
+      try {
+        const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [scriptId] });
+        if (existing.length > 0) {
+          sendResponse({ success: true });
+          return;
+        }
+        await chrome.scripting.registerContentScripts([{
+          id: scriptId,
+          matches: [`https://${domain}/*`],
+          js: BRIDGE_SCRIPT_CONFIG.js,
+          runAt: BRIDGE_SCRIPT_CONFIG.runAt,
+          allFrames: BRIDGE_SCRIPT_CONFIG.allFrames
+        }]);
+        sendResponse({ success: true });
+      } catch (error) {
+        sendResponse({ success: false, error: error.message });
+      }
+    })();
     return true;
   }
 

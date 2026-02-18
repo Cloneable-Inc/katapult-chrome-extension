@@ -3629,9 +3629,311 @@ class ImportInterface {
     };
   }
 
+  // ─── Full Model Export (version 2.0) ──────────────────────────────────────
+  // Exports ALL types, ALL attributes, ALL annotations, ALL image classifications
+  // without any user selection filtering. Matches KatapultFullModel TypeScript interface.
+
+  buildFullModelExport() {
+    // Full attribute metadata helper — includes nested field resolution for group/json types
+    const getAttributeMetadata = (attrName) => {
+      const picklistAttr = this.availableAttributes.withPicklists.find(a => a.name === attrName);
+      if (picklistAttr) {
+        const metadata = {
+          name: { name: attrName, type: 'picklist' },
+          dataType: 'picklist',
+          displayName: picklistAttr.displayName,
+          picklistOptions: picklistAttr.values || picklistAttr.picklistOptions || {},
+          cloneableDataType: 'string',
+          isSpecialType: false
+        };
+
+        // Include nested fields for picklist attributes that have them (compound types)
+        if (picklistAttr.nestedFields && picklistAttr.dataType === 'json') {
+          metadata.nestedFields = this.resolveNestedFields(attrName, picklistAttr.nestedFields);
+        }
+
+        return metadata;
+      }
+      const freeformAttr = this.availableAttributes.withoutPicklists.find(a => a.name === attrName);
+      if (freeformAttr) {
+        const metadata = {
+          name: { name: attrName, type: 'freeform' },
+          dataType: freeformAttr.dataType || 'text',
+          displayName: freeformAttr.displayName,
+          cloneableDataType: this.getCloneableDataType(freeformAttr.dataType),
+          isSpecialType: this.isSpecialType(freeformAttr.dataType)
+        };
+
+        // Include nested field structure for json/group types
+        if (freeformAttr.nestedFields && freeformAttr.dataType === 'json') {
+          metadata.nestedFields = this.resolveNestedFields(attrName, freeformAttr.nestedFields);
+        }
+
+        return metadata;
+      }
+      return { name: { name: attrName, type: 'unknown' }, dataType: 'text' };
+    };
+
+    // Get ALL node types (not just selected)
+    const allNodeTypes = window.contentScriptNodeTypes || [];
+    const allConnectionTypes = window.contentScriptConnectionTypes || [];
+
+    // Build section entries from availableAttributes.sectionTypes
+    const sectionEntries = [];
+    const sectionTypes = this.availableAttributes.sectionTypes || { values: {} };
+    for (const [category, types] of Object.entries(sectionTypes.values)) {
+      for (const type of types) {
+        const typeName = typeof type === 'string' ? type : (type.cleanName || type.displayName || type);
+        sectionEntries.push({ category, type: typeName });
+      }
+    }
+
+    return {
+      version: '2.0',
+      format: 'full_model',
+      timestamp: new Date().toISOString(),
+      source: 'katapult',
+      nodes: allNodeTypes.map(nt => {
+        const typeName = nt.cleanName || nt.displayName;
+        const attrs = this.getAllAttributesForType(nt, 'node', getAttributeMetadata);
+        const attrNames = attrs.map(a => a.name?.name || a.name || '');
+        return {
+          id: typeof nt.key === 'string' ? (parseInt(nt.key) || 0) : (nt.key || 0),
+          type: typeName,
+          category: nt.category,
+          attributes: attrs,
+          images: this.getImageClassificationsForType(nt),
+          visualizationRules: this.getVisualizationRules({ type: typeName, category: nt.category }, attrNames, 'node'),
+        };
+      }),
+      connections: allConnectionTypes.map(ct => {
+        const typeName = ct.cleanName || ct.displayName;
+        const attrs = this.getAllAttributesForType(ct, 'connection', getAttributeMetadata);
+        const attrNames = attrs.map(a => a.name?.name || a.name || '');
+        return {
+          id: typeof ct.key === 'string' ? (parseInt(ct.key) || 0) : (ct.key || 0),
+          type: typeName,
+          category: ct.category,
+          attributes: attrs,
+          images: [],
+          visualizationRules: this.getVisualizationRules({ type: typeName, category: ct.category }, attrNames, 'connection'),
+        };
+      }),
+      sections: sectionEntries.map((s, i) => {
+        const attrs = this.getAllAttributesForType(s, 'section', getAttributeMetadata);
+        const attrNames = attrs.map(a => a.name?.name || a.name || '');
+        return {
+          id: i,
+          type: s.type,
+          category: s.category,
+          attributes: attrs,
+          images: [],
+          visualizationRules: this.getVisualizationRules({ type: s.type, category: s.category }, attrNames, 'section'),
+        };
+      }),
+      poleAnnotations: this.buildAllPoleAnnotationsExport(),
+      imageClassifications: this.buildImageClassificationsExport(),
+      attributeDefinitions: window.katapultReconstructedAttributes || window.contentScriptAttributes || {},
+    };
+  }
+
+  /**
+   * Returns ALL attributes that apply to a given entity type.
+   * Checks attributeDefinitions for attribute_types containing the entityType.
+   */
+  getAllAttributesForType(typeObj, entityType, getMetadata) {
+    const attrDefs = this.attributeDefinitions ||
+                     window.contentScriptAttributes ||
+                     window.katapultReconstructedAttributes || {};
+    const results = [];
+
+    for (const [attrName, attrDef] of Object.entries(attrDefs)) {
+      // Skip node_type and cable_type as they're handled as type selectors
+      if (attrName === 'node_type' || attrName === 'cable_type') continue;
+
+      const attrTypes = attrDef.attribute_types
+        ? Object.values(attrDef.attribute_types)
+        : [];
+
+      if (attrTypes.includes(entityType)) {
+        results.push(getMetadata(attrName));
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Builds ALL pole annotations export (not filtered by user selection).
+   * Includes every annotation category and every type within it.
+   */
+  buildAllPoleAnnotationsExport() {
+    const definitions = this.poleAnnotationDefinitions || {};
+    const exportData = [];
+
+    for (const [categoryKey, categoryDef] of Object.entries(definitions)) {
+      const primaryAttrMeta = categoryDef.primaryAttribute
+        ? this.buildAttributeMetadata(categoryDef.primaryAttribute)
+        : null;
+
+      const companyAttrMeta = this.buildAttributeMetadata('company');
+
+      const categoryExport = {
+        elementType: categoryKey,
+        displayName: categoryDef.displayName,
+        shortcut: categoryDef.shortcut || null,
+        description: categoryDef.description || null,
+        traceType: categoryDef.traceType || null,
+        primaryAttribute: primaryAttrMeta,
+        includeCompany: !!companyAttrMeta,
+        companyAttribute: companyAttrMeta,
+        selectedTypes: []
+      };
+
+      // Include ALL types (not just user-selected ones)
+      const types = categoryDef.types || {};
+      for (const [typeKey, typeDef] of Object.entries(types)) {
+        const subAttrMeta = typeDef?.subAttribute
+          ? this.buildAttributeMetadata(typeDef.subAttribute)
+          : null;
+
+        // Collect ALL sub-values if sub-attribute has picklist options
+        const allSubValues = [];
+        if (subAttrMeta && subAttrMeta.options) {
+          subAttrMeta.options.forEach(opt => allSubValues.push(opt.value));
+        }
+
+        categoryExport.selectedTypes.push({
+          value: typeKey,
+          displayName: typeDef?.displayName || this.formatDisplayName(typeKey),
+          category: typeDef?.category || null,
+          subAttribute: subAttrMeta,
+          selectedSubValues: allSubValues
+        });
+      }
+
+      exportData.push(categoryExport);
+    }
+
+    return exportData;
+  }
+
+  /**
+   * Converts photoClassifications to KatapultImageClassification format.
+   */
+  buildImageClassificationsExport() {
+    if (!this.photoClassifications || !Array.isArray(this.photoClassifications)) {
+      return [];
+    }
+    return this.photoClassifications.map(pc => ({
+      displayName: pc.name || pc.id,
+      id: pc.id || pc.key,
+      elementType: pc.type || 'chip',
+      allowMultiple: true,
+      captureMode: 'multiple',
+    }));
+  }
+
+  /**
+   * Returns image classification references for a specific node type.
+   * Maps photoClassifications to per-type image entries.
+   */
+  getImageClassificationsForType(nodeType) {
+    if (!this.photoClassifications || !Array.isArray(this.photoClassifications)) {
+      return [];
+    }
+    // All image classifications are potentially applicable to node types
+    return this.photoClassifications.map(pc => ({
+      id: pc.id || pc.key,
+      mode: 'multiple',
+    }));
+  }
+
+  /**
+   * Resolves nested field structures for group/json attributes.
+   * Handles:
+   * - group types with group_items (resolves referenced attribute definitions)
+   * - dropdown fields with picklist options
+   * - referenced_picklist fields
+   * - inline picklist fields
+   */
+  resolveNestedFields(attrName, nestedFields) {
+    const resolved = {};
+
+    // Check if parent attribute is a "group" type with group_items
+    const parentAttrDef = this.attributeDefinitions ? this.attributeDefinitions[attrName] : null;
+    const isGroupType = parentAttrDef && parentAttrDef.gui_element === 'group' && parentAttrDef.group_items;
+
+    Object.entries(nestedFields).forEach(([fieldName, fieldDef]) => {
+      let actualFieldDef = fieldDef;
+      let actualGuiElement = fieldDef._gui_element || 'text';
+
+      // For group types, map nested field to actual attribute definition
+      if (isGroupType) {
+        const groupItems = Object.values(parentAttrDef.group_items);
+        const referencedAttrName = groupItems.find(item => {
+          const itemStr = typeof item === 'string' ? item : (item?.value || item?.name || String(item));
+          return itemStr && itemStr.includes && itemStr.includes(fieldName);
+        });
+        const attrNameToLookup = typeof referencedAttrName === 'string'
+          ? referencedAttrName
+          : (referencedAttrName?.value || referencedAttrName?.name || referencedAttrName);
+
+        if (attrNameToLookup && this.attributeDefinitions[attrNameToLookup]) {
+          const referencedAttr = this.attributeDefinitions[attrNameToLookup];
+          actualGuiElement = referencedAttr.gui_element || actualGuiElement;
+          actualFieldDef = referencedAttr;
+        }
+      }
+
+      const fieldMetadata = {
+        type: actualGuiElement,
+        definition: fieldDef
+      };
+
+      // If it's a dropdown, resolve and include picklist options
+      if (actualGuiElement === 'dropdown') {
+        if (isGroupType && actualFieldDef.picklists) {
+          const picklistOptions = {};
+          Object.keys(actualFieldDef.picklists).forEach(category => {
+            const categoryData = actualFieldDef.picklists[category];
+            if (categoryData && typeof categoryData === 'object') {
+              picklistOptions[category] = Object.values(categoryData).map(item =>
+                typeof item === 'object' ? (item.value || item.name || String(item)) : String(item)
+              );
+            }
+          });
+          fieldMetadata.picklistOptions = picklistOptions;
+        } else if (fieldDef.referenced_picklist && this.attributeDefinitions) {
+          const referencedAttr = this.attributeDefinitions[fieldDef.referenced_picklist];
+          if (referencedAttr && referencedAttr.picklists) {
+            const picklistOptions = {};
+            Object.keys(referencedAttr.picklists).forEach(category => {
+              const categoryData = referencedAttr.picklists[category];
+              if (categoryData && typeof categoryData === 'object') {
+                picklistOptions[category] = Object.values(categoryData).map(item =>
+                  typeof item === 'object' ? (item.value || item.name || String(item)) : String(item)
+                );
+              }
+            });
+            fieldMetadata.picklistOptions = picklistOptions;
+          }
+        } else if (fieldDef.picklist) {
+          fieldMetadata.picklistOptions = {
+            untitled: Object.values(fieldDef.picklist).map(item => String(item))
+          };
+        }
+      }
+
+      resolved[fieldName] = fieldMetadata;
+    });
+
+    return resolved;
+  }
+
   downloadReconstructedData() {
 
-    
+
     // Gather all captured data from the window object
     const capturedData = {
       metadata: {
@@ -4638,5 +4940,80 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     
     return true; // Keep message channel open for async response
+  }
+
+  if (message.type === 'EXPORT_FULL_MODEL') {
+    try {
+      // Lazily initialize ImportInterface if not already created
+      if (!importInterface) {
+        importInterface = new ImportInterface();
+        window.importInterface = importInterface;
+      }
+
+      // Ensure data is loaded
+      importInterface.parseWebSocketMessages();
+
+      const fullModelData = importInterface.buildFullModelExport();
+
+      // Cache in chrome.storage for the bridge script
+      chrome.storage.local.set({
+        cachedFullModel: fullModelData,
+        cachedModelTimestamp: Date.now(),
+        cachedModelSource: window.location.href
+      });
+
+      // Download as JSON file (unless skipDownload is set for bridge mode)
+      if (!message.skipDownload) {
+        const jsonString = JSON.stringify(fullModelData, null, 2);
+        const blob = new Blob([jsonString], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `katapult-full-model-${timestamp}.json`;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      sendResponse({
+        success: true,
+        nodeCount: fullModelData.nodes.length,
+        connectionCount: fullModelData.connections.length,
+        sectionCount: (fullModelData.sections || []).length,
+        annotationCount: (fullModelData.poleAnnotations || []).length,
+        imageClassificationCount: (fullModelData.imageClassifications || []).length
+      });
+    } catch (error) {
+      sendResponse({ success: false, error: error.message });
+    }
+    return true;
+  }
+
+  if (message.type === 'GET_FULL_MODEL_CACHE') {
+    try {
+      if (!importInterface) {
+        importInterface = new ImportInterface();
+        window.importInterface = importInterface;
+      }
+
+      importInterface.parseWebSocketMessages();
+      const fullModelData = importInterface.buildFullModelExport();
+
+      // Update cache
+      chrome.storage.local.set({
+        cachedFullModel: fullModelData,
+        cachedModelTimestamp: Date.now(),
+        cachedModelSource: window.location.href
+      });
+
+      sendResponse({ success: true, model: fullModelData });
+    } catch (error) {
+      sendResponse({ success: false, error: error.message });
+    }
+    return true;
   }
 });

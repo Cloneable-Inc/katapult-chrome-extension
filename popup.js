@@ -23,11 +23,13 @@ async function updateStatus() {
   const statusElement = document.getElementById('status');
   const debugBtn = document.getElementById('dump-websocket-btn');
   const addDomainBtn = document.getElementById('add-domain-btn');
+  const exportFullModelBtn = document.getElementById('export-full-model-btn');
 
   if (!currentTab || !currentTab.url) {
     statusElement.textContent = 'No active tab';
     debugBtn.disabled = true;
     addDomainBtn.disabled = true;
+    exportFullModelBtn.disabled = true;
     return;
   }
 
@@ -39,6 +41,7 @@ async function updateStatus() {
     statusElement.textContent = `Active on ${domain}`;
     statusElement.classList.add('active');
     debugBtn.disabled = false;
+    exportFullModelBtn.disabled = false;
 
     // Check if it's a model editor page
     const isModelEditor = isModelEditorUrl(currentTab.url);
@@ -53,6 +56,7 @@ async function updateStatus() {
     statusElement.textContent = `Inactive on ${domain}`;
     statusElement.classList.remove('active');
     debugBtn.disabled = true;
+    exportFullModelBtn.disabled = true;
 
     // Check if current page could be added
     const isModelEditor = isModelEditorUrl(currentTab.url);
@@ -101,6 +105,9 @@ async function loadDomainList() {
 function setupEventListeners() {
   // Add domain button
   document.getElementById('add-domain-btn').addEventListener('click', handleAddDomain);
+
+  // Export full model button
+  document.getElementById('export-full-model-btn').addEventListener('click', handleExportFullModel);
 
   // Debug button
   document.getElementById('dump-websocket-btn').addEventListener('click', handleDumpWebSocket);
@@ -201,6 +208,34 @@ async function handleRemoveDomain(domain) {
     console.error('Error removing domain:', error);
     alert('Error removing domain');
   }
+}
+
+// Handle export full model button click
+function handleExportFullModel() {
+  const btn = document.getElementById('export-full-model-btn');
+  showFeedback(btn, 'Exporting...', '#1976D2', false);
+
+  chrome.tabs.sendMessage(currentTab.id, {
+    type: 'EXPORT_FULL_MODEL',
+    skipDownload: true
+  }, (response) => {
+    if (chrome.runtime.lastError) {
+      showFeedback(btn, 'Error: no connection', '#f44336');
+      return;
+    }
+
+    if (response && response.success) {
+      const summary = `${response.nodeCount}N ${response.connectionCount}C ${response.sectionCount || 0}S`;
+      showFeedback(btn, `Opening import... (${summary})`, '#4CAF50');
+
+      // Open the Cloneable import page — bridge script will auto-inject
+      chrome.tabs.create({
+        url: 'http://localhost:3000/tools/pole-inspect/import'
+      });
+    } else {
+      showFeedback(btn, `Error: ${(response && response.error) || 'unknown'}`, '#f44336');
+    }
+  });
 }
 
 // Handle dump WebSocket button click
