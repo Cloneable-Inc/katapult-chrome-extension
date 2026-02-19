@@ -101,6 +101,7 @@ async function loadDomainList() {
 function setupEventListeners() {
   document.getElementById('add-domain-btn').addEventListener('click', handleAddDomain);
   document.getElementById('export-full-model-btn').addEventListener('click', handleExportFullModel);
+
 }
 
 // Handle add domain button click
@@ -220,7 +221,7 @@ function handleExportFullModel() {
 
       // Open the Cloneable import page — bridge script will auto-inject
       chrome.tabs.create({
-        url: 'http://localhost:3000/tools/pole-inspect/import'
+        url: 'https://app.cloneable.ai/tools/pole-inspect/import'
       });
     } else {
       showFeedback(btn, `Error: ${(response && response.error) || 'unknown'}`, '#f44336');
