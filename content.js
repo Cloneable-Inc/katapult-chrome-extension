@@ -3867,6 +3867,7 @@ class ImportInterface {
     Object.entries(nestedFields).forEach(([fieldName, fieldDef]) => {
       let actualFieldDef = fieldDef;
       let actualGuiElement = fieldDef._gui_element || 'text';
+      let resolvedFieldName = fieldName;
 
       // For group types, map nested field to actual attribute definition
       if (isGroupType) {
@@ -3883,6 +3884,7 @@ class ImportInterface {
           const referencedAttr = this.attributeDefinitions[attrNameToLookup];
           actualGuiElement = referencedAttr.gui_element || actualGuiElement;
           actualFieldDef = referencedAttr;
+          resolvedFieldName = attrNameToLookup;
         }
       }
 
@@ -3925,7 +3927,7 @@ class ImportInterface {
         }
       }
 
-      resolved[fieldName] = fieldMetadata;
+      resolved[resolvedFieldName] = fieldMetadata;
     });
 
     return resolved;
