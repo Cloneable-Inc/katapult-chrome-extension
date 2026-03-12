@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Katapult to Cloneable Exporter",
-  "version": "1.12",
+  "version": "1.18",
   "description": "Export models from Katapult Pro to Cloneable",
   "permissions": [
     "activeTab",
     "webRequest",
     "storage",
-    "scripting"
+    "scripting",
+    "unlimitedStorage"
   ],
   "optional_host_permissions": [
     "https://*/*"
@@ -22,6 +23,11 @@
       "js": ["content.js"],
       "css": ["styles.css"],
       "run_at": "document_start"
+    },
+    {
+      "matches": ["https://app.cloneable.ai/*", "http://localhost:3000/*"],
+      "js": ["cloneable-bridge.js"],
+      "run_at": "document_idle"
     }
   ],
   "web_accessible_resources": [
@@ -31,7 +37,8 @@
         "inject-reconstructor.js",
         "import-interface-content.js",
         "import-interface.css",
-        "fallback-data.js"
+        "fallback-data.js",
+        "cloneable-bridge.js"
       ],
       "matches": ["https://*/*"]
     }
