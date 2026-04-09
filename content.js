@@ -913,6 +913,7 @@ class ImportInterface {
 
       
       // Convert processed image classifications to the expected format
+      // Preserve all original data so nothing is stripped from the export
       this.photoClassifications = window.contentScriptImageClassifications.map(image => ({
         id: image.key,
         key: image.key,
@@ -923,7 +924,8 @@ class ImportInterface {
         textColor: image.textColor,
         editable: image.editable,
         hasAttributes: image.hasAttributes,
-        helpText: image.helpText
+        helpText: image.helpText,
+        originalData: image.originalData || {}
       }));
       
 
@@ -933,9 +935,10 @@ class ImportInterface {
 
       
       // Convert processed image classifications to the expected format
+      // Preserve all original data so nothing is stripped from the export
       this.photoClassifications = window.katapultProcessedImageClassifications.map(image => ({
         id: image.key,
-        key: image.key, 
+        key: image.key,
         name: image.name,
         shortcut: image.shortcut,
         type: image.elementType,
@@ -943,7 +946,8 @@ class ImportInterface {
         textColor: image.textColor,
         editable: image.editable,
         hasAttributes: image.hasAttributes,
-        helpText: image.helpText
+        helpText: image.helpText,
+        originalData: image.originalData || {}
       }));
       
 
@@ -3829,8 +3833,15 @@ class ImportInterface {
       displayName: pc.name || pc.id,
       id: pc.id || pc.key,
       elementType: pc.type || 'chip',
+      shortcut: pc.shortcut || null,
+      color: pc.color || null,
+      textColor: pc.textColor || null,
+      editable: pc.editable !== undefined ? pc.editable : true,
+      hasAttributes: pc.hasAttributes || false,
+      helpText: pc.helpText || null,
       allowMultiple: true,
       captureMode: 'multiple',
+      ...(pc.originalData || {}),
     }));
   }
 
@@ -4877,6 +4888,11 @@ window.debugNodeTypes = function() {
 
 // Listen for messages from popup/background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'PING') {
+    sendResponse({ pong: true });
+    return;
+  }
+
   if (message.type === 'DUMP_WEBSOCKET_DATA') {
 
     

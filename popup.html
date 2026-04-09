@@ -123,6 +123,40 @@
       color: #999;
       font-style: italic;
     }
+    .env-section {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid #e0e0e0;
+    }
+    .env-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #333;
+    }
+    .env-toggle label {
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .env-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 3px;
+      text-transform: uppercase;
+    }
+    .env-badge.prod {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+    .env-badge.dev {
+      background: #fff3e0;
+      color: #e65100;
+    }
   </style>
 </head>
 <body>
@@ -130,6 +164,23 @@
   <p>Export models from Katapult Pro to Cloneable format.</p>
   <div class="status" id="status">
     Extension is ready
+  </div>
+
+  <div class="env-section" id="env-section" style="display: none;">
+    <div class="env-toggle">
+      <span class="section-title">Environment</span>
+      <label>
+        <input type="radio" name="environment" value="production" checked>
+        <span class="env-badge prod">Prod</span>
+      </label>
+      <label>
+        <input type="radio" name="environment" value="development">
+        <span class="env-badge dev">Dev</span>
+      </label>
+    </div>
+    <button class="export-btn" id="download-json-btn" style="margin-top: 8px; background: #FF9800; font-size: 12px; padding: 6px 10px;" disabled>
+      Download Export JSON
+    </button>
   </div>
 
   <div class="export-section">
