@@ -5011,29 +5011,32 @@ async function autoApplyStickLine() {
 // Start auto-apply after a delay to let the page render
 setTimeout(autoApplyStickLine, 3000);
 
-// Re-apply when navigating between poles (hash change or DOM mutation)
+// Re-apply when navigating between poles (hash change)
 window.addEventListener('hashchange', () => {
-  // Reset saved state since it's a new pole
   originalStickLineState = null;
   setTimeout(autoApplyStickLine, 2000);
 });
 
-// Watch for photo viewer DOM changes (e.g. switching poles within same page)
-const stickLineObserver = new MutationObserver(() => {
-  // Debounce — only re-apply after mutations settle
-  clearTimeout(stickLineObserver._debounce);
-  stickLineObserver._debounce = setTimeout(async () => {
-    const { extendStickLine } = await chrome.storage.local.get('extendStickLine');
-    if (extendStickLine === false) return;
-    const stickLines = deepQueryAll(document, '.stickLine');
-    if (stickLines.length > 0 && !stickLines[0].style.getPropertyPriority('top')) {
-      // Stick line exists but our override isn't applied — re-apply
-      originalStickLineState = null;
-      handleExtendStickLine(true);
+// Periodically check if stick line needs re-applying (handles pole switches within same page)
+// Shadow DOM mutations don't bubble to document.body, so polling is more reliable
+let lastStickLineStyle = '';
+setInterval(async () => {
+  const { extendStickLine } = await chrome.storage.local.get('extendStickLine');
+  if (extendStickLine === false) return;
+
+  const stickLines = deepQueryAll(document, '.stickLine');
+  if (stickLines.length === 0) return;
+
+  const currentStyle = stickLines[0].style.cssText;
+  // If the style changed (Katapult re-rendered) and our override isn't there, re-apply
+  if (currentStyle !== lastStickLineStyle && !stickLines[0].style.getPropertyPriority('top')) {
+    originalStickLineState = null;
+    const result = handleExtendStickLine(true);
+    if (result.applied) {
+      lastStickLineStyle = stickLines[0].style.cssText;
     }
-  }, 500);
-});
-stickLineObserver.observe(document.body, { childList: true, subtree: true });
+  }
+}, 1500);
 
 // Listen for messages from popup/background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
