@@ -3830,6 +3830,7 @@ class ImportInterface {
       return [];
     }
     return this.photoClassifications.map(pc => ({
+      ...(pc.originalData || {}),
       displayName: pc.name || pc.id,
       id: pc.id || pc.key,
       elementType: pc.type || 'chip',
@@ -3841,7 +3842,6 @@ class ImportInterface {
       helpText: pc.helpText || null,
       allowMultiple: true,
       captureMode: 'multiple',
-      ...(pc.originalData || {}),
     }));
   }
 
@@ -4911,17 +4911,25 @@ function handleExtendStickLine(enabled) {
 
   // Save original state on first access
   if (!originalStickLineState) {
+    const ancestorOverflows = [];
+    let el = stickLine.parentElement;
+    while (el && el !== document.documentElement) {
+      ancestorOverflows.push({ element: el, overflow: el.style.overflow });
+      if (el.getRootNode && el.getRootNode() !== document) break;
+      el = el.parentElement;
+    }
     originalStickLineState = {
       cssText: stickLine.style.cssText,
-      containerOverflow: stickLine.parentElement ? stickLine.parentElement.style.overflow : ''
+      ancestorOverflows
     };
   }
 
   if (!enabled) {
     // Restore original state
     stickLine.style.cssText = originalStickLineState.cssText;
-    const container = stickLine.parentElement;
-    if (container) container.style.overflow = originalStickLineState.containerOverflow;
+    originalStickLineState.ancestorOverflows.forEach(({ element, overflow }) => {
+      element.style.overflow = overflow;
+    });
     return { applied: true, message: 'Restored original line' };
   }
 

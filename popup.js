@@ -128,9 +128,7 @@ async function updateStatus() {
 
       // Apply stick line preference
       const toggle = document.getElementById('extend-stickline-toggle');
-      if (toggle.checked) {
-        toggleStickLine(true);
-      }
+      toggleStickLine(toggle.checked);
     } else {
       statusElement.textContent = `Reconnecting to ${domain}...`;
       statusElement.classList.remove('active');
