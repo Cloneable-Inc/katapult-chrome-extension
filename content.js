@@ -4886,10 +4886,165 @@ window.debugNodeTypes = function() {
   window.postMessage({ type: 'cloneable-get-model-attributes' }, '*');
 };
 
+// Deep shadow DOM query helper
+function deepQueryAll(root, selector) {
+  const results = [];
+  if (!root) return results;
+  root.querySelectorAll(selector).forEach(el => results.push(el));
+  root.querySelectorAll('*').forEach(el => {
+    if (el.shadowRoot) deepQueryAll(el.shadowRoot, selector).forEach(r => results.push(r));
+  });
+  return results;
+}
+
+// Store original stick line state for restore
+let originalStickLineState = null;
+
+// Handle extend stick line toggle
+function handleExtendStickLine(enabled) {
+  const stickLines = deepQueryAll(document, '.stickLine');
+  if (stickLines.length === 0) {
+    return { applied: false, message: 'No measurement line found' };
+  }
+
+  const stickLine = stickLines[0];
+
+  // Save original state on first access
+  if (!originalStickLineState) {
+    originalStickLineState = {
+      cssText: stickLine.style.cssText,
+      containerOverflow: stickLine.parentElement ? stickLine.parentElement.style.overflow : ''
+    };
+  }
+
+  if (!enabled) {
+    // Restore original state
+    stickLine.style.cssText = originalStickLineState.cssText;
+    const container = stickLine.parentElement;
+    if (container) container.style.overflow = originalStickLineState.containerOverflow;
+    return { applied: true, message: 'Restored original line' };
+  }
+
+  // Find all annotation markers to get calibration points
+  const annotations = deepQueryAll(document, '.fixedSizeAnnotation');
+  if (annotations.length === 0) {
+    return { applied: false, message: 'No calibration markers found' };
+  }
+
+  // Parse height values from marker labels and find bottom/top calibration points
+  let bottomCalPoint = null;
+  let highestFeet = 0;
+
+  annotations.forEach(ann => {
+    const label = ann.querySelector('.markerLabel');
+    if (!label) return;
+    const text = label.textContent.trim();
+
+    // Parse heights like "0'-0\"", "9'-7\"", "38'-5\""
+    const match = text.match(/^(\d+)'-(\d+)"?$/);
+    if (!match) return;
+
+    const feet = parseInt(match[1]);
+    const inches = parseInt(match[2]);
+    const totalFeet = feet + inches / 12;
+    const top = parseFloat(ann.style.top);
+    const left = parseFloat(ann.style.left);
+
+    if (isNaN(top) || isNaN(left)) return;
+
+    // Track highest measurement
+    if (totalFeet > highestFeet) highestFeet = totalFeet;
+
+    // Bottom calibration = lowest height value (0'-0" or smallest)
+    if (!bottomCalPoint || totalFeet < bottomCalPoint.totalFeet) {
+      bottomCalPoint = { totalFeet, top, left, text };
+    }
+  });
+
+  if (!bottomCalPoint) {
+    return { applied: false, message: 'No height markers found' };
+  }
+
+  // Auto-detect: only apply if highest calibration > 22 feet (Cloneable measurement)
+  if (highestFeet <= 22) {
+    return { applied: false, message: 'Not a Cloneable measurement (max ' + Math.round(highestFeet) + '\')' };
+  }
+
+  // Move stick line to bottom calibration point, extend to top of image
+  stickLine.style.setProperty('top', bottomCalPoint.top + '%', 'important');
+  stickLine.style.setProperty('left', bottomCalPoint.left + '%', 'important');
+  stickLine.style.setProperty('width', '100%', 'important');
+  stickLine.style.setProperty('z-index', '99999', 'important');
+
+  // Ensure parent containers don't clip the line
+  let el = stickLine.parentElement;
+  while (el && el !== document.documentElement) {
+    if (getComputedStyle(el).overflow === 'hidden') {
+      el.style.setProperty('overflow', 'visible', 'important');
+    }
+    if (el.getRootNode && el.getRootNode() !== document) break;
+    el = el.parentElement;
+  }
+
+  return {
+    applied: true,
+    message: 'Extended from ' + bottomCalPoint.text + ' (max ' + Math.round(highestFeet) + '\')'
+  };
+}
+
+// Auto-apply stick line extension on page load
+async function autoApplyStickLine() {
+  const { extendStickLine } = await chrome.storage.local.get('extendStickLine');
+  if (extendStickLine === false) return;
+
+  // Retry a few times since the photo viewer may not be rendered yet
+  let retries = 0;
+  const interval = setInterval(() => {
+    retries++;
+    const result = handleExtendStickLine(true);
+    if (result.applied || retries >= 20) {
+      clearInterval(interval);
+    }
+  }, 1000);
+}
+
+// Start auto-apply after a delay to let the page render
+setTimeout(autoApplyStickLine, 3000);
+
+// Re-apply when navigating between poles (hash change or DOM mutation)
+window.addEventListener('hashchange', () => {
+  // Reset saved state since it's a new pole
+  originalStickLineState = null;
+  setTimeout(autoApplyStickLine, 2000);
+});
+
+// Watch for photo viewer DOM changes (e.g. switching poles within same page)
+const stickLineObserver = new MutationObserver(() => {
+  // Debounce — only re-apply after mutations settle
+  clearTimeout(stickLineObserver._debounce);
+  stickLineObserver._debounce = setTimeout(async () => {
+    const { extendStickLine } = await chrome.storage.local.get('extendStickLine');
+    if (extendStickLine === false) return;
+    const stickLines = deepQueryAll(document, '.stickLine');
+    if (stickLines.length > 0 && !stickLines[0].style.getPropertyPriority('top')) {
+      // Stick line exists but our override isn't applied — re-apply
+      originalStickLineState = null;
+      handleExtendStickLine(true);
+    }
+  }, 500);
+});
+stickLineObserver.observe(document.body, { childList: true, subtree: true });
+
 // Listen for messages from popup/background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'PING') {
     sendResponse({ pong: true });
+    return;
+  }
+
+  if (message.type === 'TOGGLE_EXTEND_STICKLINE') {
+    const result = handleExtendStickLine(message.enabled);
+    sendResponse(result);
     return;
   }
 

@@ -17,6 +17,9 @@ async function init() {
   // Load saved environment preference
   await loadEnvironment();
 
+  // Load stick line preference
+  await loadStickLinePreference();
+
   // Update status
   await updateStatus();
 
@@ -38,6 +41,33 @@ async function loadEnvironment() {
 // Save environment preference
 function saveEnvironment(env) {
   chrome.storage.local.set({ cloneableEnv: env, cloneableEnvUpdatedAt: new Date().toISOString() });
+}
+
+// Load stick line preference
+async function loadStickLinePreference() {
+  const { extendStickLine } = await chrome.storage.local.get('extendStickLine');
+  // Default to true (on)
+  const enabled = extendStickLine !== false;
+  document.getElementById('extend-stickline-toggle').checked = enabled;
+}
+
+// Toggle stick line extension
+function toggleStickLine(enabled) {
+  chrome.storage.local.set({ extendStickLine: enabled });
+  if (currentTab && contentScriptConnected) {
+    chrome.tabs.sendMessage(currentTab.id, {
+      type: 'TOGGLE_EXTEND_STICKLINE',
+      enabled: enabled
+    }, (response) => {
+      if (chrome.runtime.lastError) return;
+      const statusEl = document.getElementById('stickline-status');
+      if (response && response.applied) {
+        statusEl.textContent = response.message || 'Applied';
+      } else if (response && response.message) {
+        statusEl.textContent = response.message;
+      }
+    });
+  }
 }
 
 // Ping the content script to check if it's loaded in the tab
@@ -95,6 +125,12 @@ async function updateStatus() {
       statusElement.classList.add('active');
       exportFullModelBtn.disabled = false;
       downloadJsonBtn.disabled = false;
+
+      // Apply stick line preference
+      const toggle = document.getElementById('extend-stickline-toggle');
+      if (toggle.checked) {
+        toggleStickLine(true);
+      }
     } else {
       statusElement.textContent = `Reconnecting to ${domain}...`;
       statusElement.classList.remove('active');
@@ -172,6 +208,11 @@ function setupEventListeners() {
   document.getElementById('add-domain-btn').addEventListener('click', handleAddDomain);
   document.getElementById('export-full-model-btn').addEventListener('click', handleExportFullModel);
   document.getElementById('download-json-btn').addEventListener('click', handleDownloadJSON);
+
+  // Stick line toggle
+  document.getElementById('extend-stickline-toggle').addEventListener('change', (e) => {
+    toggleStickLine(e.target.checked);
+  });
 
   // Environment radio buttons
   document.querySelectorAll('input[name="environment"]').forEach(radio => {

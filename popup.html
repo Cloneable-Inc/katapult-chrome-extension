@@ -123,6 +123,28 @@
       color: #999;
       font-style: italic;
     }
+    .stickline-section {
+      margin-top: 12px;
+      padding: 8px 12px;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #333;
+      cursor: pointer;
+    }
+    .toggle-label {
+      font-weight: 500;
+    }
+    .toggle-hint {
+      font-size: 11px;
+      color: #888;
+      margin-top: 4px;
+    }
     .env-section {
       margin-top: 16px;
       padding-top: 16px;
@@ -181,6 +203,14 @@
     <button class="export-btn" id="download-json-btn" style="margin-top: 8px; background: #FF9800; font-size: 12px; padding: 6px 10px;" disabled>
       Download Export JSON
     </button>
+  </div>
+
+  <div class="stickline-section" id="stickline-section">
+    <label class="toggle-row">
+      <input type="checkbox" id="extend-stickline-toggle" checked>
+      <span class="toggle-label">Extend measurement line</span>
+    </label>
+    <div class="toggle-hint" id="stickline-status"></div>
   </div>
 
   <div class="export-section">
