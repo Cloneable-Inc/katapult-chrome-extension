@@ -4980,8 +4980,8 @@ function handleExtendStickLine(enabled) {
     return { applied: false, message: 'No height markers found' };
   }
 
-  // Auto-detect: only apply if highest calibration > 22 feet (Cloneable measurement)
-  if (highestFeet <= 22) {
+  // Auto-detect: only apply if highest calibration > 20 feet (Cloneable measurement)
+  if (highestFeet <= 20) {
     return { applied: false, message: 'Not a Cloneable measurement (max ' + Math.round(highestFeet) + '\')' };
   }
 
