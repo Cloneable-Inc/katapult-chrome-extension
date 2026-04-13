@@ -4986,20 +4986,20 @@ function handleExtendStickLine(enabled) {
   }
 
   // Move stick line to bottom calibration point, extend to top of image
-  // width controls vertical extent since the line is rotated ~90deg
-  // We need enough width to cover from bottomCalPoint.top% to 0% (top of image)
-  // But width is relative to parent width, not height — so calculate the ratio
+  // The line is rotated ~90deg so CSS 'width' controls vertical extent.
+  // 'width' is % of parent width, but we need to span parent height.
+  // Use pixel value for precision: set width in px = bottomCalTop% * parentHeight
   const parent = stickLine.parentElement;
-  const parentWidth = parent ? parent.offsetWidth : 1;
-  const parentHeight = parent ? parent.offsetHeight : 1;
-  const heightNeededPx = (bottomCalPoint.top / 100) * parentHeight;
-  const widthPercent = (heightNeededPx / parentWidth) * 100;
-  // Add 10% buffer to ensure it extends past the top edge
-  const finalWidth = Math.max(widthPercent + 10, 100);
+  const parentHeight = parent ? parent.offsetHeight : 0;
+  if (parentHeight > 0) {
+    const pxNeeded = (bottomCalPoint.top / 100) * parentHeight;
+    stickLine.style.setProperty('width', pxNeeded + 'px', 'important');
+  } else {
+    stickLine.style.setProperty('width', '2000px', 'important');
+  }
 
   stickLine.style.setProperty('top', bottomCalPoint.top + '%', 'important');
   stickLine.style.setProperty('left', bottomCalPoint.left + '%', 'important');
-  stickLine.style.setProperty('width', finalWidth + '%', 'important');
   stickLine.style.setProperty('z-index', '99999', 'important');
 
   // Ensure parent containers don't clip the line
