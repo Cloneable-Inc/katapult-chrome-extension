@@ -5009,8 +5009,10 @@ function handleExtendStickLine(enabled) {
 
 // Auto-apply stick line extension on page load
 async function autoApplyStickLine() {
-  const { extendStickLine } = await chrome.storage.local.get('extendStickLine');
-  if (extendStickLine === false) return;
+  try {
+    const { extendStickLine } = await chrome.storage.local.get('extendStickLine');
+    if (extendStickLine === false) return;
+  } catch (e) { return; } // Extension context invalidated
 
   // Retry a few times since the photo viewer may not be rendered yet
   let retries = 0;
@@ -5036,7 +5038,10 @@ window.addEventListener('hashchange', () => {
 // Shadow DOM mutations don't bubble to document.body, so polling is more reliable
 let lastStickLineStyle = '';
 setInterval(async () => {
-  const { extendStickLine } = await chrome.storage.local.get('extendStickLine');
+  let extendStickLine;
+  try {
+    ({ extendStickLine } = await chrome.storage.local.get('extendStickLine'));
+  } catch (e) { return; } // Extension context invalidated
   if (extendStickLine === false) return;
 
   const stickLines = deepQueryAll(document, '.stickLine');
