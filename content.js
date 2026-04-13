@@ -4948,13 +4948,20 @@ function handleExtendStickLine(enabled) {
     if (!label) return;
     const text = label.textContent.trim();
 
-    // Parse heights like "0'-0\"", "9'-7\"", "38'-5\""
-    const match = text.match(/^(\d+)'-(\d+)"?$/);
-    if (!match) return;
-
-    const feet = parseInt(match[1]);
-    const inches = parseInt(match[2]);
-    const totalFeet = feet + inches / 12;
+    // Parse heights in various formats:
+    //   "38'-5\"" or "9'-7\"" (feet-inches with quotes)
+    //   "39'" or "33.9'" (decimal feet with quote)
+    //   "4'8" (feet'inches no dash)
+    //   "0'-0\"" (zero calibration)
+    let totalFeet = null;
+    const matchFeetInches = text.match(/^(\d+)'[\s-]*(\d+)"?$/);
+    const matchDecimalFeet = text.match(/^(\d+\.?\d*)'$/);
+    if (matchFeetInches) {
+      totalFeet = parseInt(matchFeetInches[1]) + parseInt(matchFeetInches[2]) / 12;
+    } else if (matchDecimalFeet) {
+      totalFeet = parseFloat(matchDecimalFeet[1]);
+    }
+    if (totalFeet === null) return;
     const top = parseFloat(ann.style.top);
     const left = parseFloat(ann.style.left);
 
