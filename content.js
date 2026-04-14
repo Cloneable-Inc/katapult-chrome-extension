@@ -5045,9 +5045,10 @@ window.addEventListener('hashchange', () => {
   setTimeout(autoApplyStickLine, 2000);
 });
 
-// Periodically check if stick line needs re-applying (handles pole switches within same page)
+// Periodically check if stick line needs re-applying (handles pole switches and zoom)
 // Shadow DOM mutations don't bubble to document.body, so polling is more reliable
 let lastStickLineStyle = '';
+let lastParentHeight = 0;
 setInterval(async () => {
   let extendStickLine;
   try {
@@ -5058,14 +5059,24 @@ setInterval(async () => {
   const stickLines = deepQueryAll(document, '.stickLine');
   if (stickLines.length === 0) return;
 
-  const currentStyle = stickLines[0].style.cssText;
-  // If the style changed (Katapult re-rendered) and our override isn't there, re-apply
-  if (currentStyle !== lastStickLineStyle && !stickLines[0].style.getPropertyPriority('top')) {
+  const stickLine = stickLines[0];
+  const currentStyle = stickLine.style.cssText;
+  const parentHeight = stickLine.parentElement ? stickLine.parentElement.offsetHeight : 0;
+
+  // Re-apply if: Katapult re-rendered (style changed without our override),
+  // or parent resized (zoom in/out changed container dimensions)
+  const styleChanged = currentStyle !== lastStickLineStyle && !stickLine.style.getPropertyPriority('top');
+  const parentResized = parentHeight !== lastParentHeight && lastParentHeight > 0 && stickLine.style.getPropertyPriority('top');
+
+  if (styleChanged || parentResized) {
     originalStickLineState = null;
     const result = handleExtendStickLine(true);
     if (result.applied) {
       lastStickLineStyle = stickLines[0].style.cssText;
+      lastParentHeight = parentHeight;
     }
+  } else if (lastParentHeight === 0 && parentHeight > 0) {
+    lastParentHeight = parentHeight;
   }
 }, 1500);
 

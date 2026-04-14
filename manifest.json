@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Katapult to Cloneable Exporter",
-  "version": "1.24",
+  "version": "1.25",
   "description": "Export models from Katapult Pro to Cloneable",
   "permissions": [
     "activeTab",
