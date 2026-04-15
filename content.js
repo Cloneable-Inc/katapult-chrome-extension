@@ -4900,6 +4900,59 @@ function deepQueryAll(root, selector) {
 // Store original stick line state for restore
 let originalStickLineState = null;
 
+// Live-update context: refreshed whenever handleExtendStickLine applies.
+// - ResizeObserver on the parent fires every frame during zoom (parent.offsetHeight
+//   changes) so we resize the line to keep it spanning the image.
+// - MutationObserver on the stick line's style attribute fires when Katapult's own
+//   code rewrites the style (e.g. during zoom it resets width to its percentage value),
+//   so we immediately re-assert our overrides.
+let stickLineLiveCtx = null;       // { stickLine, parent, topPct, leftPct }
+let stickLineResizeObserver = null;
+let stickLineMutationObserver = null;
+let stickLineReassertScheduled = false;
+
+function reassertStickLineStyle() {
+  const ctx = stickLineLiveCtx;
+  if (!ctx || !ctx.parent || !ctx.stickLine.isConnected) return;
+  const ph = ctx.parent.offsetHeight;
+  if (!ph) return;
+  const pxNeeded = (ctx.topPct / 100) * ph;
+  // Temporarily stop observing so our own writes don't retrigger the observer.
+  if (stickLineMutationObserver) stickLineMutationObserver.disconnect();
+  ctx.stickLine.style.setProperty('width', pxNeeded + 'px', 'important');
+  ctx.stickLine.style.setProperty('top', ctx.topPct + '%', 'important');
+  ctx.stickLine.style.setProperty('left', ctx.leftPct + '%', 'important');
+  ctx.stickLine.style.setProperty('z-index', '99999', 'important');
+  if (stickLineMutationObserver) {
+    try { stickLineMutationObserver.observe(ctx.stickLine, { attributes: true, attributeFilter: ['style'] }); } catch (e) {}
+  }
+}
+
+function scheduleStickLineReassert() {
+  if (stickLineReassertScheduled) return;
+  stickLineReassertScheduled = true;
+  requestAnimationFrame(() => {
+    stickLineReassertScheduled = false;
+    reassertStickLineStyle();
+  });
+}
+
+function attachStickLineLiveUpdater(stickLine, parent, topPct, leftPct) {
+  stickLineLiveCtx = { stickLine, parent, topPct, leftPct };
+
+  if (stickLineResizeObserver) stickLineResizeObserver.disconnect();
+  if (typeof ResizeObserver === 'function') {
+    stickLineResizeObserver = new ResizeObserver(scheduleStickLineReassert);
+    try { stickLineResizeObserver.observe(parent); } catch (e) {}
+  }
+
+  if (stickLineMutationObserver) stickLineMutationObserver.disconnect();
+  stickLineMutationObserver = new MutationObserver(scheduleStickLineReassert);
+  try {
+    stickLineMutationObserver.observe(stickLine, { attributes: true, attributeFilter: ['style'] });
+  } catch (e) {}
+}
+
 // Handle extend stick line toggle
 function handleExtendStickLine(enabled) {
   const stickLines = deepQueryAll(document, '.stickLine');
@@ -4930,6 +4983,9 @@ function handleExtendStickLine(enabled) {
     originalStickLineState.ancestorOverflows.forEach(({ element, overflow }) => {
       element.style.overflow = overflow;
     });
+    if (stickLineResizeObserver) { stickLineResizeObserver.disconnect(); stickLineResizeObserver = null; }
+    if (stickLineMutationObserver) { stickLineMutationObserver.disconnect(); stickLineMutationObserver = null; }
+    stickLineLiveCtx = null;
     return { applied: true, message: 'Restored original line' };
   }
 
@@ -5001,6 +5057,10 @@ function handleExtendStickLine(enabled) {
   stickLine.style.setProperty('top', bottomCalPoint.top + '%', 'important');
   stickLine.style.setProperty('left', bottomCalPoint.left + '%', 'important');
   stickLine.style.setProperty('z-index', '99999', 'important');
+
+  // Live-update the width while zoom / resize happens so the line doesn't
+  // visibly break between poll cycles.
+  if (parent) attachStickLineLiveUpdater(stickLine, parent, bottomCalPoint.top, bottomCalPoint.left);
 
   // Ensure parent containers don't clip the line
   let el = stickLine.parentElement;
