@@ -5043,7 +5043,30 @@ setTimeout(autoApplyStickLine, 3000);
 window.addEventListener('hashchange', () => {
   originalStickLineState = null;
   setTimeout(autoApplyStickLine, 2000);
+  setTimeout(requestAutoCalibrate, 2500);
 });
+
+// Auto-calibrate: ask inject.js to run saveCalibration on any photo viewer with purple markers.
+// Calibration only happens when preference is on; inject.js handles the Polymer call in MAIN world.
+// The `autoConfirmDoItAnyway` preference is forwarded so inject.js knows whether to auto-click
+// the validation dialog that sometimes appears after the save.
+function requestAutoCalibrate() {
+  try {
+    chrome.storage.local.get(['autoCalibrate', 'autoConfirmDoItAnyway'], (result) => {
+      if (chrome.runtime.lastError) return;
+      if (result.autoCalibrate === false) return;
+      window.postMessage({
+        type: 'cloneable-auto-calibrate',
+        requestId: Date.now(),
+        autoConfirm: result.autoConfirmDoItAnyway !== false
+      }, '*');
+    });
+  } catch (e) { /* extension context invalidated */ }
+}
+
+// Run once shortly after load, then periodically to catch node selection / new photos
+setTimeout(requestAutoCalibrate, 4000);
+setInterval(requestAutoCalibrate, 2500);
 
 // Periodically check if stick line needs re-applying (handles pole switches and zoom)
 // Shadow DOM mutations don't bubble to document.body, so polling is more reliable
@@ -5106,6 +5129,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const result = handleExtendStickLine(message.enabled);
     sendResponse(result);
     return;
+  }
+
+  if (message.type === 'TOGGLE_AUTO_CALIBRATE') {
+    if (!message.enabled) {
+      sendResponse({ applied: true, message: 'Auto-calibrate disabled' });
+      return;
+    }
+    const requestId = Date.now();
+    const handler = (event) => {
+      if (!event.data || event.data.type !== 'cloneable-auto-calibrate-result') return;
+      if (event.data.requestId !== requestId) return;
+      window.removeEventListener('message', handler);
+      sendResponse(event.data.result || { applied: false, message: 'No response' });
+    };
+    window.addEventListener('message', handler);
+    chrome.storage.local.get('autoConfirmDoItAnyway', (res) => {
+      window.postMessage({
+        type: 'cloneable-auto-calibrate',
+        requestId,
+        autoConfirm: res.autoConfirmDoItAnyway !== false
+      }, '*');
+    });
+    // Safety: release the callback if inject.js doesn't respond (e.g. photo-controls not ready)
+    setTimeout(() => {
+      window.removeEventListener('message', handler);
+      try { sendResponse({ applied: false, message: 'Timed out' }); } catch (e) {}
+    }, 3000);
+    return true; // keep sendResponse open
   }
 
   if (message.type === 'DUMP_WEBSOCKET_DATA') {

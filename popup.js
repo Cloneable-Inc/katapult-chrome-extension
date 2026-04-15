@@ -20,6 +20,12 @@ async function init() {
   // Load stick line preference
   await loadStickLinePreference();
 
+  // Load auto-calibrate preference
+  await loadAutoCalibratePreference();
+
+  // Load auto-confirm Do-it-Anyway preference
+  await loadAutoConfirmPreference();
+
   // Update status
   await updateStatus();
 
@@ -68,6 +74,42 @@ function toggleStickLine(enabled) {
       }
     });
   }
+}
+
+// Load auto-calibrate preference (default on)
+async function loadAutoCalibratePreference() {
+  const { autoCalibrate } = await chrome.storage.local.get('autoCalibrate');
+  const enabled = autoCalibrate !== false;
+  document.getElementById('auto-calibrate-toggle').checked = enabled;
+}
+
+// Toggle auto-calibrate of purple markers
+function toggleAutoCalibrate(enabled) {
+  chrome.storage.local.set({ autoCalibrate: enabled });
+  if (currentTab && contentScriptConnected) {
+    chrome.tabs.sendMessage(currentTab.id, {
+      type: 'TOGGLE_AUTO_CALIBRATE',
+      enabled: enabled
+    }, (response) => {
+      if (chrome.runtime.lastError) return;
+      const statusEl = document.getElementById('autocalibrate-status');
+      if (response && response.message) {
+        statusEl.textContent = response.message;
+      }
+    });
+  }
+}
+
+// Load auto-confirm Do-it-Anyway preference (default on)
+async function loadAutoConfirmPreference() {
+  const { autoConfirmDoItAnyway } = await chrome.storage.local.get('autoConfirmDoItAnyway');
+  const enabled = autoConfirmDoItAnyway !== false;
+  document.getElementById('auto-confirm-toggle').checked = enabled;
+}
+
+// Toggle auto-confirm Do-it-Anyway
+function toggleAutoConfirm(enabled) {
+  chrome.storage.local.set({ autoConfirmDoItAnyway: enabled });
 }
 
 // Check if model data has been captured
@@ -237,6 +279,16 @@ function setupEventListeners() {
   // Stick line toggle
   document.getElementById('extend-stickline-toggle').addEventListener('change', (e) => {
     toggleStickLine(e.target.checked);
+  });
+
+  // Auto-calibrate toggle
+  document.getElementById('auto-calibrate-toggle').addEventListener('change', (e) => {
+    toggleAutoCalibrate(e.target.checked);
+  });
+
+  // Auto-confirm Do-it-Anyway toggle
+  document.getElementById('auto-confirm-toggle').addEventListener('change', (e) => {
+    toggleAutoConfirm(e.target.checked);
   });
 
   // Environment radio buttons
