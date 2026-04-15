@@ -821,16 +821,118 @@ function processAttributesData(attributesData) {
 
 // Debug function
 window.debugNodeTypes = function() {
-  
+
   if (window.katapultProcessedNodeTypes?.length > 0) {
   }
-  
+
   return {
     messages: window.katapultWebSocketMessages?.length || 0,
     nodeTypes: window.katapultProcessedNodeTypes?.length || 0,
     connectionTypes: window.katapultProcessedConnectionTypes?.length || 0,
     attributes: Object.keys(window.katapultReconstructedAttributes || {}).length
   };
+};
+
+// Dump all captured Firebase paths with data previews
+// Run in console: dumpAllCapturedPaths() to see what data is available
+window.dumpAllCapturedPaths = function(opts = {}) {
+  const { verbose = false, filter = null, download = false } = opts;
+  const dataByPath = window.katapultModelAttributesData || {};
+  const paths = Object.keys(dataByPath).sort();
+
+  console.group(`📡 All Captured Firebase Paths (${paths.length} total)`);
+
+  const summary = [];
+
+  for (const path of paths) {
+    const data = dataByPath[path];
+    // Skip unnamed data_response entries unless verbose
+    if (!verbose && path.startsWith('data_response_')) continue;
+
+    const dataType = Array.isArray(data) ? 'array' : typeof data;
+    let size = 0;
+    let keyCount = 0;
+    let preview = '';
+
+    if (data && typeof data === 'object') {
+      const json = JSON.stringify(data);
+      size = json.length;
+      keyCount = Array.isArray(data) ? data.length : Object.keys(data).length;
+      // Show first few keys as preview
+      const keys = Array.isArray(data) ? [] : Object.keys(data).slice(0, 8);
+      preview = keys.join(', ');
+      if (Object.keys(data).length > 8) preview += ` ... (+${Object.keys(data).length - 8} more)`;
+    } else {
+      size = String(data).length;
+      preview = String(data).substring(0, 100);
+    }
+
+    const sizeStr = size > 1000000 ? `${(size / 1000000).toFixed(1)}MB`
+                  : size > 1000 ? `${(size / 1000).toFixed(1)}KB`
+                  : `${size}B`;
+
+    const entry = { path, dataType, size, sizeStr, keyCount, preview };
+    summary.push(entry);
+
+    // Apply filter if provided
+    if (filter && !path.toLowerCase().includes(filter.toLowerCase())) continue;
+
+    console.log(`${path}\n  type: ${dataType} | size: ${sizeStr} | keys: ${keyCount}\n  preview: ${preview}\n`);
+  }
+
+  console.groupEnd();
+
+  // Show total stats
+  const totalSize = summary.reduce((sum, e) => sum + e.size, 0);
+  const totalStr = totalSize > 1000000 ? `${(totalSize / 1000000).toFixed(1)}MB` : `${(totalSize / 1000).toFixed(1)}KB`;
+  console.log(`📊 Total: ${summary.length} named paths, ${totalStr} of data, ${(window.katapultWebSocketMessages || []).length} raw WS messages`);
+
+  if (download) {
+    // Download the full data dump as JSON
+    const dump = {
+      timestamp: new Date().toISOString(),
+      url: window.location.href,
+      pathCount: paths.length,
+      paths: {}
+    };
+    for (const path of paths) {
+      dump.paths[path] = dataByPath[path];
+    }
+    const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `katapult-dump-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    console.log('📥 Downloaded full data dump');
+  }
+
+  return summary;
+};
+
+// Dump data for a specific path - useful for exploring job data
+// Run in console: inspectPath('photoheight/company_space/...')
+window.inspectPath = function(pathFragment) {
+  const dataByPath = window.katapultModelAttributesData || {};
+  const matches = Object.keys(dataByPath).filter(p => p.includes(pathFragment));
+
+  if (matches.length === 0) {
+    console.log(`❌ No paths matching "${pathFragment}"`);
+    console.log('Available paths:', Object.keys(dataByPath).filter(p => !p.startsWith('data_response_')).sort());
+    return null;
+  }
+
+  const result = {};
+  for (const path of matches) {
+    console.group(`📂 ${path}`);
+    const data = dataByPath[path];
+    console.log(data);
+    console.groupEnd();
+    result[path] = data;
+  }
+
+  return result;
 };
 
 // Listen for reconstruction trigger from content script
