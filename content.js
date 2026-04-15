@@ -5087,6 +5087,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return;
   }
 
+  if (message.type === 'CHECK_DATA_STATUS') {
+    const hasNodeTypes = window.contentScriptNodeTypes && window.contentScriptNodeTypes.length > 0;
+    const hasConnectionTypes = window.contentScriptConnectionTypes && window.contentScriptConnectionTypes.length > 0;
+    const hasAttributes = window.contentScriptAttributes && Object.keys(window.contentScriptAttributes).length > 0;
+    const wsMessages = window.katapultWebSocketMessages ? window.katapultWebSocketMessages.length : 0;
+    sendResponse({
+      hasData: hasNodeTypes && hasConnectionTypes && hasAttributes,
+      nodeTypes: hasNodeTypes,
+      connectionTypes: hasConnectionTypes,
+      attributes: hasAttributes,
+      wsMessages: wsMessages
+    });
+    return;
+  }
+
   if (message.type === 'TOGGLE_EXTEND_STICKLINE') {
     const result = handleExtendStickLine(message.enabled);
     sendResponse(result);

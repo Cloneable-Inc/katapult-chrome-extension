@@ -123,6 +123,33 @@
       color: #999;
       font-style: italic;
     }
+    .data-warning {
+      margin-top: 12px;
+      padding: 10px 12px;
+      background: #fff3e0;
+      border: 1px solid #ffb74d;
+      border-radius: 4px;
+    }
+    .warning-text {
+      font-size: 12px;
+      color: #e65100;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+    .refresh-btn {
+      background: #FF9800;
+      color: white;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      width: 100%;
+    }
+    .refresh-btn:hover {
+      background: #F57C00;
+    }
     .stickline-section {
       margin-top: 12px;
       padding: 8px 12px;
@@ -203,6 +230,11 @@
     <button class="export-btn" id="download-json-btn" style="margin-top: 8px; background: #FF9800; font-size: 12px; padding: 6px 10px;" disabled>
       Download Export JSON
     </button>
+  </div>
+
+  <div class="data-warning" id="data-warning" style="display: none;">
+    <div class="warning-text">No model data captured. The page may have loaded before the extension.</div>
+    <button class="refresh-btn" id="refresh-page-btn">Refresh Page to Capture Data</button>
   </div>
 
   <div class="stickline-section" id="stickline-section">

@@ -70,6 +70,22 @@ function toggleStickLine(enabled) {
   }
 }
 
+// Check if model data has been captured
+function checkDataStatus() {
+  if (!currentTab) return;
+  chrome.tabs.sendMessage(currentTab.id, { type: 'CHECK_DATA_STATUS' }, (response) => {
+    if (chrome.runtime.lastError || !response) return;
+    const warning = document.getElementById('data-warning');
+    const exportBtn = document.getElementById('export-full-model-btn');
+    if (!response.hasData) {
+      warning.style.display = '';
+      exportBtn.disabled = true;
+    } else {
+      warning.style.display = 'none';
+    }
+  });
+}
+
 // Ping the content script to check if it's loaded in the tab
 function pingContentScript(tabId) {
   return new Promise((resolve) => {
@@ -125,6 +141,9 @@ async function updateStatus() {
       statusElement.classList.add('active');
       exportFullModelBtn.disabled = false;
       downloadJsonBtn.disabled = false;
+
+      // Check if model data has been captured
+      checkDataStatus();
 
       // Apply stick line preference
       const toggle = document.getElementById('extend-stickline-toggle');
@@ -206,6 +225,14 @@ function setupEventListeners() {
   document.getElementById('add-domain-btn').addEventListener('click', handleAddDomain);
   document.getElementById('export-full-model-btn').addEventListener('click', handleExportFullModel);
   document.getElementById('download-json-btn').addEventListener('click', handleDownloadJSON);
+
+  // Refresh page button (data warning)
+  document.getElementById('refresh-page-btn').addEventListener('click', async () => {
+    if (currentTab) {
+      await chrome.tabs.reload(currentTab.id);
+      window.close();
+    }
+  });
 
   // Stick line toggle
   document.getElementById('extend-stickline-toggle').addEventListener('change', (e) => {
@@ -365,6 +392,12 @@ function handleExportFullModel() {
       // Content script not reachable — auto-reload to fix
       showFeedback(btn, 'Reconnecting... page will refresh', '#FF9800', false);
       injectAndReload(currentTab.id);
+      return;
+    }
+
+    if (response && response.success && response.nodeCount === 0 && response.connectionCount === 0) {
+      showFeedback(btn, 'No model data — refresh the page', '#FF9800');
+      document.getElementById('data-warning').style.display = '';
       return;
     }
 
