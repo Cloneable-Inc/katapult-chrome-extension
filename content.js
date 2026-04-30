@@ -913,6 +913,7 @@ class ImportInterface {
 
       
       // Convert processed image classifications to the expected format
+      // Preserve all original data so nothing is stripped from the export
       this.photoClassifications = window.contentScriptImageClassifications.map(image => ({
         id: image.key,
         key: image.key,
@@ -923,7 +924,8 @@ class ImportInterface {
         textColor: image.textColor,
         editable: image.editable,
         hasAttributes: image.hasAttributes,
-        helpText: image.helpText
+        helpText: image.helpText,
+        originalData: image.originalData || {}
       }));
       
 
@@ -933,9 +935,10 @@ class ImportInterface {
 
       
       // Convert processed image classifications to the expected format
+      // Preserve all original data so nothing is stripped from the export
       this.photoClassifications = window.katapultProcessedImageClassifications.map(image => ({
         id: image.key,
-        key: image.key, 
+        key: image.key,
         name: image.name,
         shortcut: image.shortcut,
         type: image.elementType,
@@ -943,7 +946,8 @@ class ImportInterface {
         textColor: image.textColor,
         editable: image.editable,
         hasAttributes: image.hasAttributes,
-        helpText: image.helpText
+        helpText: image.helpText,
+        originalData: image.originalData || {}
       }));
       
 
@@ -3826,9 +3830,16 @@ class ImportInterface {
       return [];
     }
     return this.photoClassifications.map(pc => ({
+      ...(pc.originalData || {}),
       displayName: pc.name || pc.id,
       id: pc.id || pc.key,
       elementType: pc.type || 'chip',
+      shortcut: pc.shortcut || null,
+      color: pc.color || null,
+      textColor: pc.textColor || null,
+      editable: pc.editable !== undefined ? pc.editable : true,
+      hasAttributes: pc.hasAttributes || false,
+      helpText: pc.helpText || null,
       allowMultiple: true,
       captureMode: 'multiple',
     }));
@@ -4875,8 +4886,339 @@ window.debugNodeTypes = function() {
   window.postMessage({ type: 'cloneable-get-model-attributes' }, '*');
 };
 
+// Deep shadow DOM query helper
+function deepQueryAll(root, selector) {
+  const results = [];
+  if (!root) return results;
+  root.querySelectorAll(selector).forEach(el => results.push(el));
+  root.querySelectorAll('*').forEach(el => {
+    if (el.shadowRoot) deepQueryAll(el.shadowRoot, selector).forEach(r => results.push(r));
+  });
+  return results;
+}
+
+// Store original stick line state for restore
+let originalStickLineState = null;
+
+// Live-update context: refreshed whenever handleExtendStickLine applies.
+// - ResizeObserver on the parent fires every frame during zoom (parent.offsetHeight
+//   changes) so we resize the line to keep it spanning the image.
+// - MutationObserver on the stick line's style attribute fires when Katapult's own
+//   code rewrites the style (e.g. during zoom it resets width to its percentage value),
+//   so we immediately re-assert our overrides.
+let stickLineLiveCtx = null;       // { stickLine, parent, topPct, leftPct }
+let stickLineResizeObserver = null;
+let stickLineMutationObserver = null;
+let stickLineReassertScheduled = false;
+
+function reassertStickLineStyle() {
+  const ctx = stickLineLiveCtx;
+  if (!ctx || !ctx.parent || !ctx.stickLine.isConnected) return;
+  const ph = ctx.parent.offsetHeight;
+  if (!ph) return;
+  const pxNeeded = (ctx.topPct / 100) * ph;
+  // Temporarily stop observing so our own writes don't retrigger the observer.
+  if (stickLineMutationObserver) stickLineMutationObserver.disconnect();
+  ctx.stickLine.style.setProperty('width', pxNeeded + 'px', 'important');
+  ctx.stickLine.style.setProperty('top', ctx.topPct + '%', 'important');
+  ctx.stickLine.style.setProperty('left', ctx.leftPct + '%', 'important');
+  ctx.stickLine.style.setProperty('z-index', '99999', 'important');
+  if (stickLineMutationObserver) {
+    try { stickLineMutationObserver.observe(ctx.stickLine, { attributes: true, attributeFilter: ['style'] }); } catch (e) {}
+  }
+}
+
+function scheduleStickLineReassert() {
+  if (stickLineReassertScheduled) return;
+  stickLineReassertScheduled = true;
+  requestAnimationFrame(() => {
+    stickLineReassertScheduled = false;
+    reassertStickLineStyle();
+  });
+}
+
+function attachStickLineLiveUpdater(stickLine, parent, topPct, leftPct) {
+  stickLineLiveCtx = { stickLine, parent, topPct, leftPct };
+
+  if (stickLineResizeObserver) stickLineResizeObserver.disconnect();
+  if (typeof ResizeObserver === 'function') {
+    stickLineResizeObserver = new ResizeObserver(scheduleStickLineReassert);
+    try { stickLineResizeObserver.observe(parent); } catch (e) {}
+  }
+
+  if (stickLineMutationObserver) stickLineMutationObserver.disconnect();
+  stickLineMutationObserver = new MutationObserver(scheduleStickLineReassert);
+  try {
+    stickLineMutationObserver.observe(stickLine, { attributes: true, attributeFilter: ['style'] });
+  } catch (e) {}
+}
+
+// Handle extend stick line toggle
+function handleExtendStickLine(enabled) {
+  const stickLines = deepQueryAll(document, '.stickLine');
+  if (stickLines.length === 0) {
+    return { applied: false, message: 'No measurement line found' };
+  }
+
+  const stickLine = stickLines[0];
+
+  // Save original state on first access
+  if (!originalStickLineState) {
+    const ancestorOverflows = [];
+    let el = stickLine.parentElement;
+    while (el && el !== document.documentElement) {
+      ancestorOverflows.push({ element: el, overflow: el.style.overflow });
+      if (el.getRootNode && el.getRootNode() !== document) break;
+      el = el.parentElement;
+    }
+    originalStickLineState = {
+      cssText: stickLine.style.cssText,
+      ancestorOverflows
+    };
+  }
+
+  if (!enabled) {
+    // Restore original state
+    stickLine.style.cssText = originalStickLineState.cssText;
+    originalStickLineState.ancestorOverflows.forEach(({ element, overflow }) => {
+      element.style.overflow = overflow;
+    });
+    if (stickLineResizeObserver) { stickLineResizeObserver.disconnect(); stickLineResizeObserver = null; }
+    if (stickLineMutationObserver) { stickLineMutationObserver.disconnect(); stickLineMutationObserver = null; }
+    stickLineLiveCtx = null;
+    return { applied: true, message: 'Restored original line' };
+  }
+
+  // Find all annotation markers to get calibration points
+  const annotations = deepQueryAll(document, '.fixedSizeAnnotation');
+  if (annotations.length === 0) {
+    return { applied: false, message: 'No calibration markers found' };
+  }
+
+  // Parse height values from marker labels and find bottom/top calibration points
+  let bottomCalPoint = null;
+  let highestFeet = 0;
+
+  annotations.forEach(ann => {
+    const label = ann.querySelector('.markerLabel');
+    if (!label) return;
+    const text = label.textContent.trim();
+
+    // Parse heights in various formats:
+    //   "38'-5\"" or "9'-7\"" (feet-inches with quotes)
+    //   "39'" or "33.9'" (decimal feet with quote)
+    //   "4'8" (feet'inches no dash)
+    //   "0'-0\"" (zero calibration)
+    let totalFeet = null;
+    const matchFeetInches = text.match(/^(\d+)'[\s-]*(\d+)"?$/);
+    const matchDecimalFeet = text.match(/^(\d+\.?\d*)'$/);
+    if (matchFeetInches) {
+      totalFeet = parseInt(matchFeetInches[1]) + parseInt(matchFeetInches[2]) / 12;
+    } else if (matchDecimalFeet) {
+      totalFeet = parseFloat(matchDecimalFeet[1]);
+    }
+    if (totalFeet === null) return;
+    const top = parseFloat(ann.style.top);
+    const left = parseFloat(ann.style.left);
+
+    if (isNaN(top) || isNaN(left)) return;
+
+    // Track highest measurement
+    if (totalFeet > highestFeet) highestFeet = totalFeet;
+
+    // Bottom calibration = lowest height value (0'-0" or smallest)
+    if (!bottomCalPoint || totalFeet < bottomCalPoint.totalFeet) {
+      bottomCalPoint = { totalFeet, top, left, text };
+    }
+  });
+
+  if (!bottomCalPoint) {
+    return { applied: false, message: 'No height markers found' };
+  }
+
+  // Auto-detect: only apply if highest calibration > 20 feet (Cloneable measurement)
+  if (highestFeet <= 20) {
+    return { applied: false, message: 'Not a Cloneable measurement (max ' + Math.round(highestFeet) + '\')' };
+  }
+
+  // Move stick line to bottom calibration point, extend to top of image
+  // The line is rotated ~90deg so CSS 'width' controls vertical extent.
+  // 'width' is % of parent width, but we need to span parent height.
+  // Use pixel value for precision: set width in px = bottomCalTop% * parentHeight
+  const parent = stickLine.parentElement;
+  const parentHeight = parent ? parent.offsetHeight : 0;
+  if (parentHeight > 0) {
+    const pxNeeded = (bottomCalPoint.top / 100) * parentHeight;
+    stickLine.style.setProperty('width', pxNeeded + 'px', 'important');
+  } else {
+    stickLine.style.setProperty('width', '2000px', 'important');
+  }
+
+  stickLine.style.setProperty('top', bottomCalPoint.top + '%', 'important');
+  stickLine.style.setProperty('left', bottomCalPoint.left + '%', 'important');
+  stickLine.style.setProperty('z-index', '99999', 'important');
+
+  // Live-update the width while zoom / resize happens so the line doesn't
+  // visibly break between poll cycles.
+  if (parent) attachStickLineLiveUpdater(stickLine, parent, bottomCalPoint.top, bottomCalPoint.left);
+
+  // Ensure parent containers don't clip the line
+  let el = stickLine.parentElement;
+  while (el && el !== document.documentElement) {
+    if (getComputedStyle(el).overflow === 'hidden') {
+      el.style.setProperty('overflow', 'visible', 'important');
+    }
+    if (el.getRootNode && el.getRootNode() !== document) break;
+    el = el.parentElement;
+  }
+
+  return {
+    applied: true,
+    message: 'Extended from ' + bottomCalPoint.text + ' (max ' + Math.round(highestFeet) + '\')'
+  };
+}
+
+// Auto-apply stick line extension on page load
+async function autoApplyStickLine() {
+  try {
+    const { extendStickLine } = await chrome.storage.local.get('extendStickLine');
+    if (extendStickLine === false) return;
+  } catch (e) { return; } // Extension context invalidated
+
+  // Retry a few times since the photo viewer may not be rendered yet
+  let retries = 0;
+  const interval = setInterval(() => {
+    retries++;
+    const result = handleExtendStickLine(true);
+    if (result.applied || retries >= 20) {
+      clearInterval(interval);
+    }
+  }, 1000);
+}
+
+// Start auto-apply after a delay to let the page render
+setTimeout(autoApplyStickLine, 3000);
+
+// Re-apply when navigating between poles (hash change)
+window.addEventListener('hashchange', () => {
+  originalStickLineState = null;
+  setTimeout(autoApplyStickLine, 2000);
+  setTimeout(requestAutoCalibrate, 2500);
+});
+
+// Auto-calibrate: ask inject.js to run saveCalibration on any photo viewer with purple markers.
+// Calibration only happens when preference is on; inject.js handles the Polymer call in MAIN world.
+// The `autoConfirmDoItAnyway` preference is forwarded so inject.js knows whether to auto-click
+// the validation dialog that sometimes appears after the save.
+function requestAutoCalibrate() {
+  try {
+    chrome.storage.local.get(['autoCalibrate', 'autoConfirmDoItAnyway'], (result) => {
+      if (chrome.runtime.lastError) return;
+      if (result.autoCalibrate === false) return;
+      window.postMessage({
+        type: 'cloneable-auto-calibrate',
+        requestId: Date.now(),
+        autoConfirm: result.autoConfirmDoItAnyway !== false
+      }, '*');
+    });
+  } catch (e) { /* extension context invalidated */ }
+}
+
+// Run once shortly after load, then periodically to catch node selection / new photos
+setTimeout(requestAutoCalibrate, 4000);
+setInterval(requestAutoCalibrate, 2500);
+
+// Periodically check if stick line needs re-applying (handles pole switches and zoom)
+// Shadow DOM mutations don't bubble to document.body, so polling is more reliable
+let lastStickLineStyle = '';
+let lastParentHeight = 0;
+setInterval(async () => {
+  let extendStickLine;
+  try {
+    ({ extendStickLine } = await chrome.storage.local.get('extendStickLine'));
+  } catch (e) { return; } // Extension context invalidated
+  if (extendStickLine === false) return;
+
+  const stickLines = deepQueryAll(document, '.stickLine');
+  if (stickLines.length === 0) return;
+
+  const stickLine = stickLines[0];
+  const currentStyle = stickLine.style.cssText;
+  const parentHeight = stickLine.parentElement ? stickLine.parentElement.offsetHeight : 0;
+
+  // Re-apply if: Katapult re-rendered (style changed without our override),
+  // or parent resized (zoom in/out changed container dimensions)
+  const styleChanged = currentStyle !== lastStickLineStyle && !stickLine.style.getPropertyPriority('top');
+  const parentResized = parentHeight !== lastParentHeight && lastParentHeight > 0 && stickLine.style.getPropertyPriority('top');
+
+  if (styleChanged || parentResized) {
+    originalStickLineState = null;
+    const result = handleExtendStickLine(true);
+    if (result.applied) {
+      lastStickLineStyle = stickLines[0].style.cssText;
+      lastParentHeight = parentHeight;
+    }
+  } else if (lastParentHeight === 0 && parentHeight > 0) {
+    lastParentHeight = parentHeight;
+  }
+}, 1500);
+
 // Listen for messages from popup/background script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'PING') {
+    sendResponse({ pong: true });
+    return;
+  }
+
+  if (message.type === 'CHECK_DATA_STATUS') {
+    const hasNodeTypes = window.contentScriptNodeTypes && window.contentScriptNodeTypes.length > 0;
+    const hasConnectionTypes = window.contentScriptConnectionTypes && window.contentScriptConnectionTypes.length > 0;
+    const hasAttributes = window.contentScriptAttributes && Object.keys(window.contentScriptAttributes).length > 0;
+    const wsMessages = window.katapultWebSocketMessages ? window.katapultWebSocketMessages.length : 0;
+    sendResponse({
+      hasData: hasNodeTypes && hasConnectionTypes && hasAttributes,
+      nodeTypes: hasNodeTypes,
+      connectionTypes: hasConnectionTypes,
+      attributes: hasAttributes,
+      wsMessages: wsMessages
+    });
+    return;
+  }
+
+  if (message.type === 'TOGGLE_EXTEND_STICKLINE') {
+    const result = handleExtendStickLine(message.enabled);
+    sendResponse(result);
+    return;
+  }
+
+  if (message.type === 'TOGGLE_AUTO_CALIBRATE') {
+    if (!message.enabled) {
+      sendResponse({ applied: true, message: 'Auto-calibrate disabled' });
+      return;
+    }
+    const requestId = Date.now();
+    const handler = (event) => {
+      if (!event.data || event.data.type !== 'cloneable-auto-calibrate-result') return;
+      if (event.data.requestId !== requestId) return;
+      window.removeEventListener('message', handler);
+      sendResponse(event.data.result || { applied: false, message: 'No response' });
+    };
+    window.addEventListener('message', handler);
+    chrome.storage.local.get('autoConfirmDoItAnyway', (res) => {
+      window.postMessage({
+        type: 'cloneable-auto-calibrate',
+        requestId,
+        autoConfirm: res.autoConfirmDoItAnyway !== false
+      }, '*');
+    });
+    // Safety: release the callback if inject.js doesn't respond (e.g. photo-controls not ready)
+    setTimeout(() => {
+      window.removeEventListener('message', handler);
+      try { sendResponse({ applied: false, message: 'Timed out' }); } catch (e) {}
+    }, 3000);
+    return true; // keep sendResponse open
+  }
+
   if (message.type === 'DUMP_WEBSOCKET_DATA') {
 
     

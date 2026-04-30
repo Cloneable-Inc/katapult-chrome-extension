@@ -123,6 +123,89 @@
       color: #999;
       font-style: italic;
     }
+    .data-warning {
+      margin-top: 12px;
+      padding: 10px 12px;
+      background: #fff3e0;
+      border: 1px solid #ffb74d;
+      border-radius: 4px;
+    }
+    .warning-text {
+      font-size: 12px;
+      color: #e65100;
+      margin-bottom: 8px;
+      line-height: 1.4;
+    }
+    .refresh-btn {
+      background: #FF9800;
+      color: white;
+      border: none;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      width: 100%;
+    }
+    .refresh-btn:hover {
+      background: #F57C00;
+    }
+    .stickline-section {
+      margin-top: 12px;
+      padding: 8px 12px;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #333;
+      cursor: pointer;
+    }
+    .toggle-label {
+      font-weight: 500;
+    }
+    .toggle-hint {
+      font-size: 11px;
+      color: #888;
+      margin-top: 4px;
+    }
+    .env-section {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid #e0e0e0;
+    }
+    .env-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #333;
+    }
+    .env-toggle label {
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .env-badge {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 6px;
+      border-radius: 3px;
+      text-transform: uppercase;
+    }
+    .env-badge.prod {
+      background: #e8f5e9;
+      color: #2e7d32;
+    }
+    .env-badge.dev {
+      background: #fff3e0;
+      color: #e65100;
+    }
   </style>
 </head>
 <body>
@@ -130,6 +213,52 @@
   <p>Export models from Katapult Pro to Cloneable format.</p>
   <div class="status" id="status">
     Extension is ready
+  </div>
+
+  <div class="env-section" id="env-section" style="display: none;">
+    <div class="env-toggle">
+      <span class="section-title">Environment</span>
+      <label>
+        <input type="radio" name="environment" value="production" checked>
+        <span class="env-badge prod">Prod</span>
+      </label>
+      <label>
+        <input type="radio" name="environment" value="development">
+        <span class="env-badge dev">Dev</span>
+      </label>
+    </div>
+    <button class="export-btn" id="download-json-btn" style="margin-top: 8px; background: #FF9800; font-size: 12px; padding: 6px 10px;" disabled>
+      Download Export JSON
+    </button>
+  </div>
+
+  <div class="data-warning" id="data-warning" style="display: none;">
+    <div class="warning-text">No model data captured. The page may have loaded before the extension.</div>
+    <button class="refresh-btn" id="refresh-page-btn">Refresh Page to Capture Data</button>
+  </div>
+
+  <div class="stickline-section" id="stickline-section">
+    <label class="toggle-row">
+      <input type="checkbox" id="extend-stickline-toggle" checked>
+      <span class="toggle-label">Extend measurement line</span>
+    </label>
+    <div class="toggle-hint" id="stickline-status"></div>
+  </div>
+
+  <div class="stickline-section" id="autocalibrate-section">
+    <label class="toggle-row">
+      <input type="checkbox" id="auto-calibrate-toggle" checked>
+      <span class="toggle-label">Auto-calibrate purple markers</span>
+    </label>
+    <div class="toggle-hint" id="autocalibrate-status"></div>
+  </div>
+
+  <div class="stickline-section" id="auto-confirm-section">
+    <label class="toggle-row">
+      <input type="checkbox" id="auto-confirm-toggle" checked>
+      <span class="toggle-label">Auto-confirm "Do it Anyway" dialog</span>
+    </label>
+    <div class="toggle-hint">Skips the calibration out-of-range confirmation</div>
   </div>
 
   <div class="export-section">

@@ -821,10 +821,10 @@ function processAttributesData(attributesData) {
 
 // Debug function
 window.debugNodeTypes = function() {
-  
+
   if (window.katapultProcessedNodeTypes?.length > 0) {
   }
-  
+
   return {
     messages: window.katapultWebSocketMessages?.length || 0,
     nodeTypes: window.katapultProcessedNodeTypes?.length || 0,
@@ -833,12 +833,272 @@ window.debugNodeTypes = function() {
   };
 };
 
+// Dump all captured Firebase paths with data previews
+// Run in console: dumpAllCapturedPaths() to see what data is available
+window.dumpAllCapturedPaths = function(opts = {}) {
+  const { verbose = false, filter = null, download = false } = opts;
+  const dataByPath = window.katapultModelAttributesData || {};
+  const paths = Object.keys(dataByPath).sort();
+
+  console.group(`📡 All Captured Firebase Paths (${paths.length} total)`);
+
+  const summary = [];
+
+  for (const path of paths) {
+    const data = dataByPath[path];
+    // Skip unnamed data_response entries unless verbose
+    if (!verbose && path.startsWith('data_response_')) continue;
+
+    const dataType = Array.isArray(data) ? 'array' : typeof data;
+    let size = 0;
+    let keyCount = 0;
+    let preview = '';
+
+    if (data && typeof data === 'object') {
+      const json = JSON.stringify(data);
+      size = json.length;
+      keyCount = Array.isArray(data) ? data.length : Object.keys(data).length;
+      // Show first few keys as preview
+      const keys = Array.isArray(data) ? [] : Object.keys(data).slice(0, 8);
+      preview = keys.join(', ');
+      if (Object.keys(data).length > 8) preview += ` ... (+${Object.keys(data).length - 8} more)`;
+    } else {
+      size = String(data).length;
+      preview = String(data).substring(0, 100);
+    }
+
+    const sizeStr = size > 1000000 ? `${(size / 1000000).toFixed(1)}MB`
+                  : size > 1000 ? `${(size / 1000).toFixed(1)}KB`
+                  : `${size}B`;
+
+    const entry = { path, dataType, size, sizeStr, keyCount, preview };
+    summary.push(entry);
+
+    // Apply filter if provided
+    if (filter && !path.toLowerCase().includes(filter.toLowerCase())) continue;
+
+    console.log(`${path}\n  type: ${dataType} | size: ${sizeStr} | keys: ${keyCount}\n  preview: ${preview}\n`);
+  }
+
+  console.groupEnd();
+
+  // Show total stats
+  const totalSize = summary.reduce((sum, e) => sum + e.size, 0);
+  const totalStr = totalSize > 1000000 ? `${(totalSize / 1000000).toFixed(1)}MB` : `${(totalSize / 1000).toFixed(1)}KB`;
+  console.log(`📊 Total: ${summary.length} named paths, ${totalStr} of data, ${(window.katapultWebSocketMessages || []).length} raw WS messages`);
+
+  if (download) {
+    // Download the full data dump as JSON
+    const dump = {
+      timestamp: new Date().toISOString(),
+      url: window.location.href,
+      pathCount: paths.length,
+      paths: {}
+    };
+    for (const path of paths) {
+      dump.paths[path] = dataByPath[path];
+    }
+    const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `katapult-dump-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    console.log('📥 Downloaded full data dump');
+  }
+
+  return summary;
+};
+
+// Dump data for a specific path - useful for exploring job data
+// Run in console: inspectPath('photoheight/company_space/...')
+window.inspectPath = function(pathFragment) {
+  const dataByPath = window.katapultModelAttributesData || {};
+  const matches = Object.keys(dataByPath).filter(p => p.includes(pathFragment));
+
+  if (matches.length === 0) {
+    console.log(`❌ No paths matching "${pathFragment}"`);
+    console.log('Available paths:', Object.keys(dataByPath).filter(p => !p.startsWith('data_response_')).sort());
+    return null;
+  }
+
+  const result = {};
+  for (const path of matches) {
+    console.group(`📂 ${path}`);
+    const data = dataByPath[path];
+    console.log(data);
+    console.groupEnd();
+    result[path] = data;
+  }
+
+  return result;
+};
+
+// Auto-calibrate every photo viewer that has purple (uncalibrated) height markers.
+// Purple markers = `<div class="markerLabel notDisabled">` with computed bg rgba(100,100,255,0.8).
+// Calibration is done by calling photo-controls.saveCalibration(photoId, null, null, null),
+// which internally runs stick_align computation + writes _score on all anchors.
+// Per-photoId in-flight guard: Firebase writes are async, so successive scans
+// may still see purple markers before the first saveCalibration lands. We skip
+// re-issuing a call for a given photoId until this cooldown expires.
+const CLONEABLE_CALIBRATE_COOLDOWN_MS = 5000;
+window.__cloneableCalibrateInflight = window.__cloneableCalibrateInflight || {};
+
+function autoCalibratePurpleMarkers(options) {
+  const autoConfirm = !options || options.autoConfirm !== false;
+  // Fresh WeakSet per call so successive deepQuery invocations don't skip
+  // shadow roots that a previous query already traversed.
+  function deepQuery(root, predicate) {
+    const results = [];
+    const seen = new WeakSet();
+    (function walk(r) {
+      if (!r || seen.has(r)) return;
+      seen.add(r);
+      const nodes = r.querySelectorAll ? r.querySelectorAll('*') : [];
+      for (const el of nodes) {
+        if (predicate(el)) results.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      }
+      // Also recurse into the root's OWN shadow root (when called on a host directly)
+      if (r.shadowRoot) walk(r.shadowRoot);
+    })(root);
+    return results;
+  }
+
+  // Find photo-controls (singleton) and all photo viewers with a photoId
+  const controls = deepQuery(document, el => el.tagName === 'PHOTO-CONTROLS')[0];
+  if (!controls || typeof controls.saveCalibration !== 'function') {
+    return { applied: false, message: 'photo-controls not ready' };
+  }
+  const viewers = deepQuery(document, el => el.tagName === 'KATAPULT-PHOTO-VIEWER' && el.photoId);
+  if (viewers.length === 0) return { applied: false, message: 'no viewers with photoId' };
+
+  // Normalized "purple" RGBA Katapult uses for uncalibrated anchor_calibration markers.
+  const isPurple = (c) => typeof c === 'string' && c.replace(/\s+/g, '') === 'rgba(100,100,255,0.8)';
+
+  let calibrated = 0;
+  const photoIdsCalibrated = [];
+  for (const viewer of viewers) {
+    // Find anchor_calibration annotations on THIS viewer and check each's color.
+    const anchorAnnotations = deepQuery(viewer, el =>
+      el.tagName === 'KATAPULT-PHOTO-ANNOTATION' &&
+      el.__data && el.__data.attributeName === 'anchor_calibration'
+    );
+    const uncalibrated = anchorAnnotations.filter(a => isPurple(a.__data.color));
+    if (uncalibrated.length === 0) continue;
+    // Skip if we just issued a calibration for this photoId and the write hasn't
+    // landed yet (would cause double writes + double "Do it Anyway" dialogs).
+    const lastCall = window.__cloneableCalibrateInflight[viewer.photoId] || 0;
+    if (Date.now() - lastCall < CLONEABLE_CALIBRATE_COOLDOWN_MS) continue;
+    try {
+      window.__cloneableCalibrateInflight[viewer.photoId] = Date.now();
+      controls.saveCalibration(viewer.photoId, null, null, null);
+      calibrated++;
+      photoIdsCalibrated.push(viewer.photoId);
+    } catch (e) {
+      console.warn('[Cloneable] auto-calibrate failed for', viewer.photoId, e);
+    }
+  }
+
+  // Katapult's saveCalibration sometimes raises a "Do it Anyway" confirmation dialog
+  // when the computed calibration is out of range. Auto-click it to complete the flow.
+  if (calibrated > 0 && autoConfirm) autoConfirmDoItAnyway();
+
+  return {
+    applied: calibrated > 0,
+    count: calibrated,
+    photoIds: photoIdsCalibrated,
+    message: calibrated > 0 ? `Calibrated ${calibrated} photo(s)` : 'No purple markers found'
+  };
+}
+
+// Inject a one-time CSS rule that keeps any dialog containing the "Do it Anyway"
+// button hidden. The dialog is still in the DOM (so its button can be clicked), but
+// it never paints, so the user doesn't see the flash.
+(function installDoItAnywayHider() {
+  if (window.__cloneableDoItAnywayCssInstalled) return;
+  window.__cloneableDoItAnywayCssInstalled = true;
+  const style = document.createElement('style');
+  style.textContent = `[data-cloneable-hide] { visibility: hidden !important; opacity: 0 !important; }`;
+  (document.head || document.documentElement).appendChild(style);
+})();
+
+function findDoItAnywayButton() {
+  const seen = new WeakSet();
+  let btn = null;
+  (function walk(r) {
+    if (!r || btn || seen.has(r)) return;
+    seen.add(r);
+    const all = r.querySelectorAll?.('*') || [];
+    for (const el of all) {
+      if (el.tagName === 'KATAPULT-BUTTON' &&
+          (el.textContent || '').trim().toLowerCase() === 'do it anyway') {
+        btn = el; return;
+      }
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+    if (r.shadowRoot) walk(r.shadowRoot);
+  })(document);
+  return btn;
+}
+
+// Watch for the "Do it Anyway" button; as soon as it appears, hide its dialog
+// visually and click. Uses MutationObserver on every shadow root we can reach
+// so the dialog is caught before the next paint.
+function autoConfirmDoItAnyway() {
+  const tryConfirm = () => {
+    const btn = findDoItAnywayButton();
+    if (!btn) return false;
+    // Climb to the nearest dialog-like container and hide it
+    let container = btn;
+    while (container && container !== document.documentElement) {
+      const tag = container.tagName || '';
+      if (/DIALOG|MODAL/.test(tag) || container.getAttribute?.('role') === 'dialog') {
+        container.setAttribute('data-cloneable-hide', '');
+        break;
+      }
+      container = container.parentElement || (container.getRootNode && container.getRootNode().host);
+    }
+    try { btn.click(); } catch (e) {}
+    return true;
+  };
+
+  if (tryConfirm()) return;
+
+  // Otherwise observe for it briefly
+  const observers = [];
+  const seenRoots = new WeakSet();
+  function observeRoot(root) {
+    if (!root || seenRoots.has(root) || !root.querySelectorAll) return;
+    seenRoots.add(root);
+    try {
+      const o = new MutationObserver(() => {
+        if (tryConfirm()) {
+          observers.forEach(x => x.disconnect());
+        } else {
+          // New elements may have new shadow roots — observe them too
+          root.querySelectorAll('*').forEach(el => el.shadowRoot && observeRoot(el.shadowRoot));
+        }
+      });
+      o.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['opened', 'aria-hidden'] });
+      observers.push(o);
+    } catch (e) {}
+    root.querySelectorAll('*').forEach(el => el.shadowRoot && observeRoot(el.shadowRoot));
+  }
+  observeRoot(document);
+  setTimeout(() => observers.forEach(o => o.disconnect()), 3000);
+}
+
+// Expose for manual debugging in console
+window.autoCalibratePurpleMarkers = autoCalibratePurpleMarkers;
+
 // Listen for reconstruction trigger from content script
 window.addEventListener('message', function(event) {
   if (event.data && event.data.type === 'cloneable-trigger-reconstruction') {
     performReconstructionFinalization();
   } else if (event.data && event.data.type === 'cloneable-get-websocket-data-dump') {
-    
+
     // Send the WebSocket messages back to content script
     window.postMessage({
       type: 'cloneable-websocket-data-response',
@@ -846,7 +1106,14 @@ window.addEventListener('message', function(event) {
       messageCount: (window.katapultWebSocketMessages || []).length,
       timestamp: new Date().toISOString()
     }, '*');
-    
+
+  } else if (event.data && event.data.type === 'cloneable-auto-calibrate') {
+    const result = autoCalibratePurpleMarkers({ autoConfirm: event.data.autoConfirm });
+    window.postMessage({
+      type: 'cloneable-auto-calibrate-result',
+      requestId: event.data.requestId,
+      result: result
+    }, '*');
   }
 });
 
