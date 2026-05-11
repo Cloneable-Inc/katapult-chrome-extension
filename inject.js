@@ -754,9 +754,12 @@ function processAttributesData(attributesData) {
 
     Object.entries(inputModelsData).forEach(([key, modelData]) => {
       if (modelData && typeof modelData === 'object') {
-        // Only include items with element_type of 'chip' - these are the actual image classifications
-        // Skip 'point' types and other non-classification items
-        const isImageClassification = modelData.element_type === 'chip';
+        // Treat input_models entries as chips unless they're explicitly 'point' (pole annotations)
+        // or calibration markers. Some legacy/user-created chips have element_type === undefined.
+        const elType = modelData.element_type;
+        const isImageClassification =
+          elType === 'chip' ||
+          (elType !== 'point' && !key.includes('calibration'));
         
         if (isImageClassification) {
           // Format the display name  
