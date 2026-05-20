@@ -5051,29 +5051,39 @@ function handleExtendStickLine(enabled) {
     return { applied: false, message: 'Not a Cloneable measurement (max ' + Math.round(highestFeet) + '\')' };
   }
 
-  // Compute the line's actual angle from the marker positions, in degrees,
-  // matching the CSS rotation convention (a horizontal line rotated by this
-  // angle should land on the markers). Katapult sometimes mis-signs the pole
-  // tilt, causing visible drift at the top of the line when extended — our
-  // best-fit angle through bottom → top calibration markers fixes that.
-  let stickLineAngleDeg = null;
-  if (calPoints.length >= 2) {
-    const dLeft = topCalPoint.left - bottomCalPoint.left;       // % units
-    const dTop = topCalPoint.top - bottomCalPoint.top;          // negative going up
-    if (Math.abs(dTop) > 0.01) {
-      // atan2(dTop, dLeft): angle from the +x axis to the vector pointing from
-      // the rotation origin (left end of horizontal line at bottom anchor)
-      // toward the top marker.
-      stickLineAngleDeg = Math.atan2(dTop, dLeft) * 180 / Math.PI;
-    }
-  }
-
   // Move stick line to bottom calibration point, extend to top of image
   // The line is rotated ~90deg so CSS 'width' controls vertical extent.
   // 'width' is % of parent width, but we need to span parent height.
   // Use pixel value for precision: set width in px = bottomCalTop% * parentHeight
   const parent = stickLine.parentElement;
   const parentHeight = parent ? parent.offsetHeight : 0;
+  const parentWidth = parent ? parent.offsetWidth : 0;
+
+  // Compute the line's actual angle from the marker positions, in degrees,
+  // matching the CSS rotation convention (a horizontal line rotated by this
+  // angle should land on the markers). Katapult's transform sometimes
+  // mis-signs the pole tilt, causing visible drift at the top of the line
+  // when extended — our best-fit angle through bottom → top calibration
+  // markers fixes that.
+  //
+  // CRITICAL: marker positions are stored as percentages of *different*
+  // parent dimensions (top% scales with parent.offsetHeight, left% with
+  // parent.offsetWidth). The rotation angle has to be computed in pixel
+  // space, not percentage space, otherwise the angle is wrong by the
+  // parent's aspect ratio — which is how v1.44 over-corrected and tilted
+  // the line in the opposite direction.
+  let stickLineAngleDeg = null;
+  if (calPoints.length >= 2 && parentWidth > 0 && parentHeight > 0) {
+    const dLeftPx = (topCalPoint.left - bottomCalPoint.left) * parentWidth / 100;
+    const dTopPx = (topCalPoint.top - bottomCalPoint.top) * parentHeight / 100;   // negative going up
+    if (Math.abs(dTopPx) > 1) {
+      // atan2(dTopPx, dLeftPx): angle from the +x axis to the vector
+      // pointing from the rotation origin (left end of horizontal line at
+      // bottom anchor) toward the top marker, in pixel space.
+      stickLineAngleDeg = Math.atan2(dTopPx, dLeftPx) * 180 / Math.PI;
+    }
+  }
+
   if (parentHeight > 0) {
     const pxNeeded = (bottomCalPoint.top / 100) * parentHeight;
     stickLine.style.setProperty('width', pxNeeded + 'px', 'important');
