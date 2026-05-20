@@ -5092,49 +5092,13 @@ function handleExtendStickLine(enabled) {
     return { applied: true, message: 'Restored original line' };
   }
 
-  // Find all annotation markers to get calibration points
-  const annotations = deepQueryAll(document, '.fixedSizeAnnotation');
-  if (annotations.length === 0) {
-    return fallbackToNativeStickLine(stickLine, 'No calibration markers found');
-  }
-
-  // Parse height values from marker labels and collect every readable point.
-  // We need the full list (not just bottom/top) so we can compute the line's
-  // angle from the actual pole tilt rather than relying on Katapult's transform.
-  const calPoints = [];
-
-  annotations.forEach(ann => {
-    const label = ann.querySelector('.markerLabel');
-    if (!label) return;
-    const text = label.textContent.trim();
-
-    // Parse heights in various formats:
-    //   "38'-5\"" or "9'-7\"" (feet-inches with quotes)
-    //   "39'" or "33.9'" (decimal feet with quote)
-    //   "4'8" (feet'inches no dash)
-    //   "0'-0\"" (zero calibration)
-    let totalFeet = null;
-    const matchFeetInches = text.match(/^(\d+)'[\s-]*(\d+)"?$/);
-    const matchDecimalFeet = text.match(/^(\d+\.?\d*)'$/);
-    if (matchFeetInches) {
-      totalFeet = parseInt(matchFeetInches[1]) + parseInt(matchFeetInches[2]) / 12;
-    } else if (matchDecimalFeet) {
-      totalFeet = parseFloat(matchDecimalFeet[1]);
-    }
-    if (totalFeet === null) return;
-    const top = parseFloat(ann.style.top);
-    const left = parseFloat(ann.style.left);
-
-    if (isNaN(top) || isNaN(left)) return;
-
-    calPoints.push({ totalFeet, top, left, text });
-  });
-
+  // Collect every parseable calibration marker — shared helper, single source
+  // of truth for marker positions. (Previously had a duplicate copy in
+  // findCurrentBottomCalibration; consolidated.)
+  const calPoints = collectCalibrationPoints();
   if (calPoints.length === 0) {
     return fallbackToNativeStickLine(stickLine, 'No height markers found');
   }
-
-  calPoints.sort((a, b) => a.totalFeet - b.totalFeet);
   const bottomCalPoint = calPoints[0];
   const topCalPoint = calPoints[calPoints.length - 1];
   const highestFeet = topCalPoint.totalFeet;
@@ -5627,8 +5591,17 @@ function handleAutoStarClick() {
 // hides them), so we just need to re-apply at the new photo's marker
 // positions ASAP — animation frame + staggered retries to cover annotations
 // that haven't rendered yet.
-window.addEventListener('message', (event) => {
+//
+// Gated on the user's toggle: if they turned extend off, a photo switch
+// shouldn't silently re-enable our overlay. We snapshot the preference into
+// the closure so each retry doesn't repay the storage round-trip.
+window.addEventListener('message', async (event) => {
   if (!event.data || event.data.type !== 'cloneable-stick-line-reapply') return;
+  let extendStickLine;
+  try {
+    ({ extendStickLine } = await chrome.storage.local.get('extendStickLine'));
+  } catch (e) { return; } // extension context invalidated
+  if (extendStickLine === false) return;
   const tryReapply = () => {
     try { handleExtendStickLine(true); } catch (e) {}
   };
@@ -5638,16 +5611,56 @@ window.addEventListener('message', (event) => {
   setTimeout(tryReapply, 700);
 });
 
+// Coerce incoming postMessage payload fields to safe primitive shapes before
+// putting them in state. We already escape-via-textContent at render time,
+// but defense in depth: ensure samples are plain objects with string IDs /
+// finite numbers so an exotic payload can't smuggle anything strange (e.g.
+// a getter that throws when read during render, or a non-string SCID that
+// stringifies to HTML).
+function coerceStr(v)   { return v == null ? null : String(v); }
+function coerceFiniteInt(v) { return Number.isFinite(v) ? Math.trunc(v) : 0; }
+function coerceNodeSample(s) {
+  if (!s || typeof s !== 'object') return null;
+  const nodeId = coerceStr(s.nodeId);
+  if (!nodeId) return null;
+  return {
+    kind: 'node',
+    nodeId,
+    scid: s.scid == null || s.scid === '' ? null : coerceStr(s.scid),
+    nodeType: s.nodeType == null ? null : coerceStr(s.nodeType),
+    photoCount: coerceFiniteInt(s.photoCount),
+  };
+}
+function coerceConnSample(c) {
+  if (!c || typeof c !== 'object') return null;
+  const connectionId = coerceStr(c.connectionId);
+  const sectionId = coerceStr(c.sectionId);
+  if (!connectionId || !sectionId) return null;
+  return {
+    kind: 'section',
+    connectionId,
+    sectionId,
+    photoCount: coerceFiniteInt(c.photoCount),
+    scidA: c.scidA == null || c.scidA === '' ? null : coerceStr(c.scidA),
+    scidB: c.scidB == null || c.scidB === '' ? null : coerceStr(c.scidB),
+  };
+}
+
 // Listen for unstarred-count + job-loading messages from inject.js
 window.addEventListener('message', (event) => {
   if (!event.data || typeof event.data.type !== 'string') return;
   if (event.data.type === 'cloneable-unstarred-count') {
-    const jobChanged = unstarredBadgeState.jobId !== event.data.jobId;
-    unstarredBadgeState.jobId = event.data.jobId;
-    unstarredBadgeState.count = event.data.unstarredNodeCount || 0;
-    unstarredBadgeState.connCount = event.data.unstarredConnectionCount || 0;
-    unstarredBadgeState.samples = Array.isArray(event.data.samples) ? event.data.samples : [];
-    unstarredBadgeState.connSamples = Array.isArray(event.data.connSamples) ? event.data.connSamples : [];
+    const incomingJobId = coerceStr(event.data.jobId);
+    const jobChanged = unstarredBadgeState.jobId !== incomingJobId;
+    unstarredBadgeState.jobId = incomingJobId;
+    unstarredBadgeState.count = coerceFiniteInt(event.data.unstarredNodeCount);
+    unstarredBadgeState.connCount = coerceFiniteInt(event.data.unstarredConnectionCount);
+    unstarredBadgeState.samples = Array.isArray(event.data.samples)
+      ? event.data.samples.map(coerceNodeSample).filter(Boolean)
+      : [];
+    unstarredBadgeState.connSamples = Array.isArray(event.data.connSamples)
+      ? event.data.connSamples.map(coerceConnSample).filter(Boolean)
+      : [];
     unstarredBadgeState.loading = false;
     if (jobChanged) {
       unstarredBadgeState.dismissedJobId = null;
@@ -5659,11 +5672,12 @@ window.addEventListener('message', (event) => {
     }
     renderUnstarredBadge();
   } else if (event.data.type === 'cloneable-job-loading') {
-    if (unstarredBadgeState.jobId !== event.data.jobId) {
+    const incomingJobId = coerceStr(event.data.jobId);
+    if (unstarredBadgeState.jobId !== incomingJobId) {
       unstarredBadgeState.dismissedJobId = null;
       unstarredBadgeState.expanded = false;
     }
-    unstarredBadgeState.jobId = event.data.jobId;
+    unstarredBadgeState.jobId = incomingJobId;
     unstarredBadgeState.count = 0;
     unstarredBadgeState.connCount = 0;
     unstarredBadgeState.samples = [];
@@ -5717,28 +5731,41 @@ function injectHideStyleIntoViewers() {
   }
 }
 
-// Locate the lowest-height visible calibration marker. Returns { top, left,
-// totalFeet } in % of parent, or null if no parseable label is found. Mirrors
-// the parsing logic inside handleExtendStickLine.
-function findCurrentBottomCalibration() {
+// Parse one Katapult marker label into total feet, supporting all formats:
+//   "38'-5\""  (feet-inches with quotes)        38.4167
+//   "33.9'"    (decimal feet with quote)        33.9
+//   "4'8"      (feet'inches no dash)             4.6667
+//   "0'-0\""   (zero calibration)                0
+// Returns null if the text doesn't parse.
+function parseMarkerLabelToFeet(text) {
+  if (!text) return null;
+  const matchFeetInches = text.match(/^(\d+)'[\s-]*(\d+)"?$/);
+  if (matchFeetInches) return parseInt(matchFeetInches[1]) + parseInt(matchFeetInches[2]) / 12;
+  const matchDecimalFeet = text.match(/^(\d+\.?\d*)'$/);
+  if (matchDecimalFeet) return parseFloat(matchDecimalFeet[1]);
+  return null;
+}
+
+// Collect every parseable calibration marker in the live DOM. Single source of
+// truth — used by both handleExtendStickLine (to pick bottom + top for SVG)
+// and the polling tick (to detect drift). Returns an array of
+// { totalFeet, top, left, text } sorted ascending by totalFeet.
+function collectCalibrationPoints() {
   const annotations = deepQueryAll(document, '.fixedSizeAnnotation');
-  let best = null;
+  const points = [];
   for (const ann of annotations) {
     const label = ann.querySelector('.markerLabel');
     if (!label) continue;
     const text = label.textContent.trim();
-    let totalFeet = null;
-    const matchFeetInches = text.match(/^(\d+)'[\s-]*(\d+)"?$/);
-    const matchDecimalFeet = text.match(/^(\d+\.?\d*)'$/);
-    if (matchFeetInches) totalFeet = parseInt(matchFeetInches[1]) + parseInt(matchFeetInches[2]) / 12;
-    else if (matchDecimalFeet) totalFeet = parseFloat(matchDecimalFeet[1]);
+    const totalFeet = parseMarkerLabelToFeet(text);
     if (totalFeet === null) continue;
     const top = parseFloat(ann.style.top);
     const left = parseFloat(ann.style.left);
     if (isNaN(top) || isNaN(left)) continue;
-    if (!best || totalFeet < best.totalFeet) best = { totalFeet, top, left };
+    points.push({ totalFeet, top, left, text });
   }
-  return best;
+  points.sort((a, b) => a.totalFeet - b.totalFeet);
+  return points;
 }
 
 // Periodically reconcile the extend-mode state with the live DOM. Three jobs:
@@ -5770,16 +5797,21 @@ setInterval(async () => {
   if (stickLines.length === 0) return;
   const stickLine = stickLines[0];
 
-  // Compare current markers to what our last apply used. If they've drifted
-  // (or there was no last apply yet), call handleExtendStickLine to redraw.
-  const liveBottom = findCurrentBottomCalibration();
+  // Compare current bottom AND top markers to what our last apply used. If
+  // either has drifted (or there was no last apply yet), call
+  // handleExtendStickLine to redraw. Tracking both ends ensures top-only
+  // marker changes (e.g. re-tagging the highest calibration) also trigger a
+  // redraw — previously only the bottom was watched.
+  const livePoints = collectCalibrationPoints();
+  const liveBottom = livePoints[0] || null;
+  const liveTop = livePoints[livePoints.length - 1] || null;
   const ctx = stickLineLiveCtx;
   let needsRedraw = !ctx || !ctx.parent?.isConnected;
-  if (!needsRedraw && liveBottom && ctx.bottomCalPoint) {
-    if (Math.abs(liveBottom.top - ctx.bottomCalPoint.top) > MARKER_DRIFT_TOLERANCE_PCT ||
-        Math.abs(liveBottom.left - ctx.bottomCalPoint.left) > MARKER_DRIFT_TOLERANCE_PCT) {
-      needsRedraw = true;
-    }
+  const drifted = (a, b) => !a || !b ||
+    Math.abs(a.top - b.top) > MARKER_DRIFT_TOLERANCE_PCT ||
+    Math.abs(a.left - b.left) > MARKER_DRIFT_TOLERANCE_PCT;
+  if (!needsRedraw && (drifted(liveBottom, ctx.bottomCalPoint) || drifted(liveTop, ctx.topCalPoint))) {
+    needsRedraw = true;
   }
   // Also redraw if our SVG was somehow removed (Katapult re-renders, etc.)
   if (!needsRedraw) {

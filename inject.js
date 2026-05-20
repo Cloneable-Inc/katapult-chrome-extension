@@ -1371,9 +1371,11 @@ function installStarHooks() {
   if (typeof map.nodesLoaded !== 'function' || typeof map.jobIdChanged !== 'function') return false;
   map.__cloneableStarHooksInstalled = true;
 
-  const origNodesLoaded = map.nodesLoaded.bind(map);
+  const origNodesLoaded = map.nodesLoaded;
   map.nodesLoaded = function() {
-    const r = origNodesLoaded();
+    // Polymer observers can be invoked with (newValue, oldValue) — forward
+    // arguments so the original keeps any params it relies on.
+    const r = origNodesLoaded.apply(map, arguments);
     try { scheduleUnstarredRecount('nodesLoaded'); } catch (e) {}
     return r;
   };
@@ -1389,9 +1391,11 @@ function installStarHooks() {
     };
   }
 
-  const origJobIdChanged = map.jobIdChanged.bind(map);
+  const origJobIdChanged = map.jobIdChanged;
   map.jobIdChanged = function() {
-    const r = origJobIdChanged();
+    // Polymer observers can be invoked with (newValue, oldValue) — forward
+    // arguments so the original keeps any params it relies on.
+    const r = origJobIdChanged.apply(map, arguments);
     try {
       window.postMessage({
         type: 'cloneable-job-loading',
@@ -1467,9 +1471,12 @@ async function autoStarUnstarredNodes() {
     }
   }
 
+  // Star every eligible unstarred section in every connection (one main photo
+  // per section). Previous versions used a `break` after the first successful
+  // section per connection — that left other unstarred sections in the same
+  // connection still missing a main photo.
   for (const cid of connIds) {
     const conn = unstarredConnections[cid];
-    let starred = false;
     for (const [sid, section] of Object.entries(conn.sections || {})) {
       // Same selection rule as poles: pick the section photo with the highest
       // anchor_calibration measurement above the threshold.
@@ -1483,8 +1490,6 @@ async function autoStarUnstarredNodes() {
       try {
         await map.updateMainPhotoWithAssociation(candidates[0].pid, null, cid, sid);
         connStarred++;
-        starred = true;
-        break;
       } catch (e) {
         errors.push({ connectionId: cid, sectionId: sid, message: e?.message || String(e) });
       }
