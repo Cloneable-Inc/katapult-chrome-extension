@@ -5057,6 +5057,9 @@ function handleExtendStickLine(enabled) {
   stickLine.style.setProperty('top', bottomCalPoint.top + '%', 'important');
   stickLine.style.setProperty('left', bottomCalPoint.left + '%', 'important');
   stickLine.style.setProperty('z-index', '99999', 'important');
+  // If we'd hidden the line earlier (pole switch / drift), restore visibility
+  // now that it's anchored to the correct marker positions.
+  stickLine.style.removeProperty('visibility');
 
   // Live-update the width while zoom / resize happens so the line doesn't
   // visibly break between poll cycles.
@@ -5099,10 +5102,25 @@ async function autoApplyStickLine() {
 // Start auto-apply after a delay to let the page render
 setTimeout(autoApplyStickLine, 3000);
 
-// Re-apply when navigating between poles (hash change)
+// Toggle visibility of the existing stick-line without removing our position
+// overrides. Used to hide the line during a pole switch so the user never
+// sees it at the previous photo's coordinates while the new photo's
+// annotations are still rendering.
+function setStickLineHidden(stickLine, hidden) {
+  if (!stickLine) return;
+  if (hidden) stickLine.style.setProperty('visibility', 'hidden', 'important');
+  else stickLine.style.removeProperty('visibility');
+}
+
+// Re-apply when navigating between poles (hash change).
+// Hide the line immediately so the user never sees it stuck at the old pole's
+// anchor while the new photo's annotations are still loading. autoApplyStickLine
+// will restore visibility when it lands on the new photo's marker positions.
 window.addEventListener('hashchange', () => {
+  const stickLines = deepQueryAll(document, '.stickLine');
+  if (stickLines.length) setStickLineHidden(stickLines[0], true);
   originalStickLineState = null;
-  setTimeout(autoApplyStickLine, 2000);
+  autoApplyStickLine();
   setTimeout(requestAutoCalibrate, 2500);
 });
 
@@ -5614,6 +5632,11 @@ setInterval(async () => {
   }
 
   if (styleChanged || parentResized || bottomMoved) {
+    // Hide BEFORE re-applying so a misaligned frame never reaches the
+    // compositor. handleExtendStickLine restores visibility when it lands the
+    // new positions (both writes happen in the same JS task, so the browser
+    // typically only paints the final state).
+    if (bottomMoved) setStickLineHidden(stickLine, true);
     originalStickLineState = null;
     const result = handleExtendStickLine(true);
     if (result.applied) {
