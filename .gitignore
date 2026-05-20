@@ -36,3 +36,14 @@ npm-debug.log*
 
 # Claude files
 .claude/
+
+# Chrome Web Store build artifacts (built via zip, not tracked in source)
+katapult-to-cloneable-v*.zip
+katapult-to-cloneable-v*/
+
+# Local dev / Playwright artifacts
+.playwright-mcp/
+katapult-initial.png
+
+# Ad-hoc debug scripts not used in production
+find-nested-types.js

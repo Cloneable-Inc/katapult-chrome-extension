@@ -4911,21 +4911,99 @@ let stickLineResizeObserver = null;
 let stickLineMutationObserver = null;
 let stickLineReassertScheduled = false;
 
+// Find the KATAPULT-PHOTO-VIEWER (shadow host) that contains the given element.
+// The native .stickLine and our SVG both live inside the viewer's shadow root,
+// so walking up getRootNode().host once gets us the viewer.
+function findViewerForShadowChild(el) {
+  if (!el) return null;
+  const root = el.getRootNode();
+  return root instanceof ShadowRoot ? root.host : null;
+}
+
+// Toggle the per-viewer hide attribute that the shadow-root stylesheet keys on.
+// Setting it engages the hide of Katapult's native .stickLine in that viewer;
+// clearing it makes the native line visible again (our fallback for photos
+// whose max calibration is below the Cloneable threshold).
+function setViewerHideNative(viewer, hide) {
+  if (!viewer) return;
+  if (hide) viewer.setAttribute('data-cloneable-extend', 'on');
+  else viewer.removeAttribute('data-cloneable-extend');
+}
+
+// Draw our extended-stick-line as an SVG line inside the same parent that holds
+// .stickLine. Pure pixel-space geometry — no CSS rotation, no aspect-ratio
+// gymnastics. The line passes from the bottom marker through the top marker,
+// then is extrapolated to the top of the image so it spans the full visible
+// pole. Idempotent: reuses an existing SVG if present.
+const CLONEABLE_SVG_CLASS = 'cloneable-extended-line';
+function drawExtendedLineSvg(parent, bottomCalPoint, topCalPoint) {
+  const pw = parent.offsetWidth;
+  const ph = parent.offsetHeight;
+  if (!pw || !ph) return;
+
+  // Convert % positions to pixels.
+  const bx = (bottomCalPoint.left / 100) * pw;
+  const by = (bottomCalPoint.top / 100) * ph;
+  const tx = (topCalPoint.left / 100) * pw;
+  const ty = (topCalPoint.top / 100) * ph;
+
+  // Extend through the bottom→top vector to the top edge of the parent (y=0).
+  // If the markers happen to be at the same height, we just connect them.
+  let x2 = tx, y2 = ty;
+  const dy = ty - by;
+  if (Math.abs(dy) > 0.01) {
+    const t = (0 - by) / dy;
+    x2 = bx + t * (tx - bx);
+    y2 = 0;
+  }
+
+  let svg = parent.querySelector(':scope > svg.' + CLONEABLE_SVG_CLASS);
+  if (!svg) {
+    svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.classList.add(CLONEABLE_SVG_CLASS);
+    Object.assign(svg.style, {
+      position: 'absolute',
+      top: '0', left: '0',
+      width: '100%', height: '100%',
+      pointerEvents: 'none',
+      overflow: 'visible',
+    });
+    svg.setAttribute('preserveAspectRatio', 'none');
+    parent.appendChild(svg);
+  }
+  // viewBox in parent's pixel units so coords below are direct.
+  svg.setAttribute('viewBox', `0 0 ${pw} ${ph}`);
+
+  let line = svg.querySelector('line');
+  if (!line) {
+    line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('stroke', '#ffdf00');        // Katapult-ish yellow
+    line.setAttribute('stroke-width', '2');
+    line.setAttribute('vector-effect', 'non-scaling-stroke');
+    svg.appendChild(line);
+  }
+  line.setAttribute('x1', bx);
+  line.setAttribute('y1', by);
+  line.setAttribute('x2', x2);
+  line.setAttribute('y2', y2);
+
+  // Engage the hide on this specific viewer now that our SVG is anchored.
+  setViewerHideNative(findViewerForShadowChild(parent), true);
+}
+
+function removeExtendedLineSvgs() {
+  deepQueryAll(document, 'svg.' + CLONEABLE_SVG_CLASS).forEach(s => {
+    setViewerHideNative(findViewerForShadowChild(s), false);
+    s.remove();
+  });
+}
+
 function reassertStickLineStyle() {
   const ctx = stickLineLiveCtx;
-  if (!ctx || !ctx.parent || !ctx.stickLine.isConnected) return;
-  const ph = ctx.parent.offsetHeight;
-  if (!ph) return;
-  const pxNeeded = (ctx.topPct / 100) * ph;
-  // Temporarily stop observing so our own writes don't retrigger the observer.
-  if (stickLineMutationObserver) stickLineMutationObserver.disconnect();
-  ctx.stickLine.style.setProperty('width', pxNeeded + 'px', 'important');
-  ctx.stickLine.style.setProperty('top', ctx.topPct + '%', 'important');
-  ctx.stickLine.style.setProperty('left', ctx.leftPct + '%', 'important');
-  ctx.stickLine.style.setProperty('z-index', '99999', 'important');
-  if (stickLineMutationObserver) {
-    try { stickLineMutationObserver.observe(ctx.stickLine, { attributes: true, attributeFilter: ['style'] }); } catch (e) {}
-  }
+  if (!ctx || !ctx.parent || !ctx.parent.isConnected) return;
+  // Just redraw the SVG with the current parent dimensions — marker percentages
+  // are constant; pixel positions scale with zoom automatically.
+  drawExtendedLineSvg(ctx.parent, ctx.bottomCalPoint, ctx.topCalPoint);
 }
 
 function scheduleStickLineReassert() {
@@ -4937,8 +5015,8 @@ function scheduleStickLineReassert() {
   });
 }
 
-function attachStickLineLiveUpdater(stickLine, parent, topPct, leftPct) {
-  stickLineLiveCtx = { stickLine, parent, topPct, leftPct };
+function attachStickLineLiveUpdater(stickLine, parent, bottomCalPoint, topCalPoint) {
+  stickLineLiveCtx = { stickLine, parent, bottomCalPoint, topCalPoint };
 
   if (stickLineResizeObserver) stickLineResizeObserver.disconnect();
   if (typeof ResizeObserver === 'function') {
@@ -4946,11 +5024,32 @@ function attachStickLineLiveUpdater(stickLine, parent, topPct, leftPct) {
     try { stickLineResizeObserver.observe(parent); } catch (e) {}
   }
 
+  // Watch the .stickLine's style for changes — Katapult sometimes re-positions
+  // it during interactions, and that's also the moment when our shadow-root
+  // hide rule may need re-engaging (a fresh element). We don't actually copy
+  // values from .stickLine anymore; we just take it as a re-draw nudge.
   if (stickLineMutationObserver) stickLineMutationObserver.disconnect();
   stickLineMutationObserver = new MutationObserver(scheduleStickLineReassert);
   try {
     stickLineMutationObserver.observe(stickLine, { attributes: true, attributeFilter: ['style'] });
   } catch (e) {}
+}
+
+// Helper: from any path inside handleExtendStickLine that decides we are NOT
+// extending this viewer's line, fall back cleanly to the native stick line by
+// removing our SVG and clearing the host attribute. Lets the native .stickLine
+// render normally for non-Cloneable photos (max calibration < 20 ft).
+function fallbackToNativeStickLine(stickLine, message) {
+  const viewer = findViewerForShadowChild(stickLine);
+  if (viewer) {
+    // Remove our SVG from this viewer's shadow root (if present) and clear
+    // the hide attribute so Katapult's native line becomes visible again.
+    if (viewer.shadowRoot) {
+      viewer.shadowRoot.querySelectorAll('svg.' + CLONEABLE_SVG_CLASS).forEach(s => s.remove());
+    }
+    setViewerHideNative(viewer, false);
+  }
+  return { applied: false, message };
 }
 
 // Handle extend stick line toggle
@@ -4978,89 +5077,56 @@ function handleExtendStickLine(enabled) {
   }
 
   if (!enabled) {
-    // Restore original state
-    stickLine.style.cssText = originalStickLineState.cssText;
-    originalStickLineState.ancestorOverflows.forEach(({ element, overflow }) => {
-      element.style.overflow = overflow;
-    });
+    // Tear down: remove the SVG overlay, disconnect observers, drop the
+    // overflow overrides. Katapult's native .stickLine becomes visible again
+    // because the polling tick clears the body's data-cloneable-extend flag.
+    removeExtendedLineSvgs();
+    if (originalStickLineState) {
+      originalStickLineState.ancestorOverflows.forEach(({ element, overflow }) => {
+        element.style.overflow = overflow;
+      });
+    }
     if (stickLineResizeObserver) { stickLineResizeObserver.disconnect(); stickLineResizeObserver = null; }
     if (stickLineMutationObserver) { stickLineMutationObserver.disconnect(); stickLineMutationObserver = null; }
     stickLineLiveCtx = null;
     return { applied: true, message: 'Restored original line' };
   }
 
-  // Find all annotation markers to get calibration points
-  const annotations = deepQueryAll(document, '.fixedSizeAnnotation');
-  if (annotations.length === 0) {
-    return { applied: false, message: 'No calibration markers found' };
+  // Collect every parseable calibration marker — shared helper, single source
+  // of truth for marker positions. (Previously had a duplicate copy in
+  // findCurrentBottomCalibration; consolidated.)
+  const calPoints = collectCalibrationPoints();
+  if (calPoints.length === 0) {
+    return fallbackToNativeStickLine(stickLine, 'No height markers found');
   }
+  const bottomCalPoint = calPoints[0];
+  const topCalPoint = calPoints[calPoints.length - 1];
+  const highestFeet = topCalPoint.totalFeet;
 
-  // Parse height values from marker labels and find bottom/top calibration points
-  let bottomCalPoint = null;
-  let highestFeet = 0;
-
-  annotations.forEach(ann => {
-    const label = ann.querySelector('.markerLabel');
-    if (!label) return;
-    const text = label.textContent.trim();
-
-    // Parse heights in various formats:
-    //   "38'-5\"" or "9'-7\"" (feet-inches with quotes)
-    //   "39'" or "33.9'" (decimal feet with quote)
-    //   "4'8" (feet'inches no dash)
-    //   "0'-0\"" (zero calibration)
-    let totalFeet = null;
-    const matchFeetInches = text.match(/^(\d+)'[\s-]*(\d+)"?$/);
-    const matchDecimalFeet = text.match(/^(\d+\.?\d*)'$/);
-    if (matchFeetInches) {
-      totalFeet = parseInt(matchFeetInches[1]) + parseInt(matchFeetInches[2]) / 12;
-    } else if (matchDecimalFeet) {
-      totalFeet = parseFloat(matchDecimalFeet[1]);
-    }
-    if (totalFeet === null) return;
-    const top = parseFloat(ann.style.top);
-    const left = parseFloat(ann.style.left);
-
-    if (isNaN(top) || isNaN(left)) return;
-
-    // Track highest measurement
-    if (totalFeet > highestFeet) highestFeet = totalFeet;
-
-    // Bottom calibration = lowest height value (0'-0" or smallest)
-    if (!bottomCalPoint || totalFeet < bottomCalPoint.totalFeet) {
-      bottomCalPoint = { totalFeet, top, left, text };
-    }
-  });
-
-  if (!bottomCalPoint) {
-    return { applied: false, message: 'No height markers found' };
-  }
-
-  // Auto-detect: only apply if highest calibration > 20 feet (Cloneable measurement)
+  // Auto-detect: only extend on Cloneable measurements (max calibration above
+  // the 20 ft threshold). Photos like attachment-only shots, where all heights
+  // are low, fall back to Katapult's native short line.
   if (highestFeet <= 20) {
-    return { applied: false, message: 'Not a Cloneable measurement (max ' + Math.round(highestFeet) + '\')' };
+    return fallbackToNativeStickLine(stickLine, 'Not a Cloneable measurement (max ' + Math.round(highestFeet) + '\')');
   }
 
-  // Move stick line to bottom calibration point, extend to top of image
-  // The line is rotated ~90deg so CSS 'width' controls vertical extent.
-  // 'width' is % of parent width, but we need to span parent height.
-  // Use pixel value for precision: set width in px = bottomCalTop% * parentHeight
+  // New approach (v1.46+): instead of fighting Katapult's CSS rotation on
+  // .stickLine, hide the original line via the shadow-root stylesheet and
+  // overlay our own SVG line. The SVG draws from the bottom marker pixel
+  // position through the top marker pixel position, extended to the top of
+  // the image. Pure pixel-space geometry, no rotation math.
   const parent = stickLine.parentElement;
   const parentHeight = parent ? parent.offsetHeight : 0;
-  if (parentHeight > 0) {
-    const pxNeeded = (bottomCalPoint.top / 100) * parentHeight;
-    stickLine.style.setProperty('width', pxNeeded + 'px', 'important');
-  } else {
-    stickLine.style.setProperty('width', '2000px', 'important');
+  const parentWidth = parent ? parent.offsetWidth : 0;
+  if (!parent || !parentWidth || !parentHeight) {
+    return fallbackToNativeStickLine(stickLine, 'Photo viewer not laid out yet');
   }
 
-  stickLine.style.setProperty('top', bottomCalPoint.top + '%', 'important');
-  stickLine.style.setProperty('left', bottomCalPoint.left + '%', 'important');
-  stickLine.style.setProperty('z-index', '99999', 'important');
+  drawExtendedLineSvg(parent, bottomCalPoint, topCalPoint);
 
-  // Live-update the width while zoom / resize happens so the line doesn't
-  // visibly break between poll cycles.
-  if (parent) attachStickLineLiveUpdater(stickLine, parent, bottomCalPoint.top, bottomCalPoint.left);
+  // Hand the markers + parent to the live updater so zoom / mutation
+  // observers can redraw the SVG with current pixel dimensions.
+  attachStickLineLiveUpdater(stickLine, parent, bottomCalPoint, topCalPoint);
 
   // Ensure parent containers don't clip the line
   let el = stickLine.parentElement;
@@ -5096,13 +5162,26 @@ async function autoApplyStickLine() {
   }, 1000);
 }
 
+// Make sure the hide-stylesheet is in every photo-viewer shadow root early.
+// (Per-viewer data-cloneable-extend attributes get set later when we actually
+// draw an SVG into a viewer — see drawExtendedLineSvg.)
+(function initExtendMode() {
+  injectHideStyleIntoViewers();
+})();
+
 // Start auto-apply after a delay to let the page render
 setTimeout(autoApplyStickLine, 3000);
 
-// Re-apply when navigating between poles (hash change)
+// Re-apply when navigating between poles (hash change).
+// Drop the SVG so we don't briefly show it at the previous pole's anchor while
+// the new photo loads, then kick off the retry loop to redraw at the new
+// markers. The shadow-root stylesheet keeps Katapult's native .stickLine
+// hidden in the meantime.
 window.addEventListener('hashchange', () => {
+  removeExtendedLineSvgs();
   originalStickLineState = null;
-  setTimeout(autoApplyStickLine, 2000);
+  stickLineLiveCtx = null;
+  autoApplyStickLine();
   setTimeout(requestAutoCalibrate, 2500);
 });
 
@@ -5128,38 +5207,622 @@ function requestAutoCalibrate() {
 setTimeout(requestAutoCalibrate, 4000);
 setInterval(requestAutoCalibrate, 2500);
 
-// Periodically check if stick line needs re-applying (handles pole switches and zoom)
-// Shadow DOM mutations don't bubble to document.body, so polling is more reliable
-let lastStickLineStyle = '';
-let lastParentHeight = 0;
+// ──────────────────────────────────────────────────────────────────────────────
+// Unstarred-nodes badge
+//
+// inject.js patches KATAPULT-MAPS-DESKTOP.nodesLoaded and posts
+// `cloneable-unstarred-count` messages with a count of nodes that have photos
+// but no `association: 'main'`. We render a small floating badge with that
+// count and a button that asks inject.js to call Katapult's
+// `starPhotosInAssociation` on the same set.
+//
+// Toggle: chrome.storage.local.showUnstarredBadge (default on).
+// ──────────────────────────────────────────────────────────────────────────────
+const UNSTARRED_BADGE_ID = 'cloneable-unstarred-badge';
+let unstarredBadgeState = {
+  jobId: null,
+  count: 0,
+  connCount: 0,       // count of unstarred sections
+  samples: [],        // [{ kind:'node', nodeId, scid, nodeType, photoCount }] from inject.js
+  connSamples: [],    // [{ kind:'section', connectionId, sectionId, photoCount }]
+  loading: false,
+  busy: false,        // true while auto-star is in flight
+  enabled: true,      // mirrors chrome.storage.local.showUnstarredBadge
+  expanded: false,    // expandable list of missing-photo nodes/sections
+  feedback: null,     // { kind: 'success'|'error', message: string, sticky: boolean }
+};
+let unstarredFeedbackTimer = null;
+
+// Inject CSS once for the spinner + transient feedback states.
+function ensureBadgeStyles() {
+  if (document.getElementById('cloneable-badge-style')) return;
+  const s = document.createElement('style');
+  s.id = 'cloneable-badge-style';
+  s.textContent = `
+    @keyframes cloneable-spin { to { transform: rotate(360deg); } }
+    .cloneable-spinner {
+      display:inline-block;
+      width:14px; height:14px;
+      border:2px solid rgba(255,255,255,0.25);
+      border-top-color:#fff;
+      border-radius:50%;
+      animation: cloneable-spin 0.8s linear infinite;
+      vertical-align:-3px;
+    }
+  `;
+  document.head.appendChild(s);
+}
+
+function setBadgeFeedback(kind, message, opts) {
+  clearTimeout(unstarredFeedbackTimer);
+  unstarredBadgeState.feedback = { kind, message, sticky: !!opts?.sticky };
+  renderUnstarredBadge();
+  if (!opts?.sticky) {
+    const ms = opts?.ms ?? 2500;
+    unstarredFeedbackTimer = setTimeout(() => {
+      unstarredBadgeState.feedback = null;
+      renderUnstarredBadge();
+    }, ms);
+  }
+}
+
+async function loadUnstarredBadgePref() {
+  try {
+    const { showUnstarredBadge } = await chrome.storage.local.get('showUnstarredBadge');
+    unstarredBadgeState.enabled = showUnstarredBadge !== false;
+  } catch (e) {
+    // extension context invalidated — leave default on
+  }
+  renderUnstarredBadge();
+}
+
+function ensureBadgeElement() {
+  let el = document.getElementById(UNSTARRED_BADGE_ID);
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = UNSTARRED_BADGE_ID;
+  Object.assign(el.style, {
+    position: 'fixed',
+    // Anchored to the bottom-left, offset to clear Katapult's vertical map-
+    // controls column (layer/location/compass/pegman, ~40px wide).
+    left: '60px',
+    bottom: '16px',
+    zIndex: '2147483646',
+    background: '#1f2937',
+    color: '#fff',
+    padding: '12px 14px',
+    borderRadius: '8px',
+    boxShadow: '0 4px 14px rgba(0,0,0,0.25)',
+    font: '13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+    lineHeight: '1.35',
+    maxWidth: '280px',
+    display: 'none',
+  });
+  el.addEventListener('click', (e) => {
+    // Walk up to the nearest element carrying data-action — lets clicks on inner
+    // <span>s inside a row still resolve to the row's action.
+    let t = e.target;
+    while (t && t !== el && !t.dataset?.action) t = t.parentElement;
+    const action = t?.dataset?.action;
+    if (action === 'autostar') {
+      handleAutoStarClick();
+    } else if (action === 'dismiss') {
+      unstarredBadgeState.dismissedJobId = unstarredBadgeState.jobId;
+      renderUnstarredBadge();
+    } else if (action === 'toggle-expand') {
+      unstarredBadgeState.expanded = !unstarredBadgeState.expanded;
+      renderUnstarredBadge();
+    } else if (action === 'select-node') {
+      const nodeId = t.dataset.nodeId;
+      if (nodeId) selectUnstarredNode(nodeId);
+    } else if (action === 'select-section') {
+      const { connectionId, sectionId } = t.dataset;
+      if (connectionId && sectionId) selectUnstarredSection(connectionId, sectionId);
+    } else if (action === 'dismiss-feedback') {
+      clearTimeout(unstarredFeedbackTimer);
+      unstarredBadgeState.feedback = null;
+      renderUnstarredBadge();
+    }
+  });
+  document.documentElement.appendChild(el);
+  return el;
+}
+
+// Ask inject.js to select+pan to a node. Briefly highlight the row so the user
+// gets feedback that the click registered.
+function selectUnstarredNode(nodeId) {
+  const requestId = Date.now();
+  window.postMessage({ type: 'cloneable-select-node', requestId, nodeId }, '*');
+  flashRow(`[data-node-id="${cssEscape(nodeId)}"]`);
+}
+
+function selectUnstarredSection(connectionId, sectionId) {
+  const requestId = Date.now();
+  window.postMessage({
+    type: 'cloneable-select-section',
+    requestId, connectionId, sectionId,
+  }, '*');
+  flashRow(`[data-connection-id="${cssEscape(connectionId)}"][data-section-id="${cssEscape(sectionId)}"]`);
+}
+
+function flashRow(selectorFragment) {
+  const row = document.querySelector(`#${UNSTARRED_BADGE_ID} ${selectorFragment}`);
+  if (!row) return;
+  const prev = row.style.background;
+  row.style.background = '#374151';
+  setTimeout(() => { row.style.background = prev; }, 250);
+}
+
+// CSS.escape with a fallback for older engines / extension contexts.
+function cssEscape(s) {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(s);
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, c => '\\' + c);
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+// Title-case a Katapult node_type string ("break point" → "Break point") so we
+// can fold it into the primary label without shouting.
+function titleCaseType(t) {
+  if (!t) return '';
+  return String(t).charAt(0).toUpperCase() + String(t).slice(1);
+}
+
+// Build the expandable list of missing-photo nodes + sections.
+// Labels are designed for field users:
+// - Nodes: "SCID 010" if SCID exists, else "Break point GxXe" (type + short id)
+// - Sections: "Section: SCID 005 ↔ 006" using the endpoint SCIDs from the
+//   connection, since a section ID by itself means nothing to the user.
+function renderUnstarredList(samples, connSamples) {
+  const nodeRows = (samples || []).map(s => {
+    let label;
+    if (s.scid != null && s.scid !== '') {
+      label = `SCID ${escapeHtml(s.scid)}`;
+    } else {
+      const type = titleCaseType(s.nodeType) || 'Node';
+      const tail = String(s.nodeId).replace(/^-/, '').slice(-4);
+      label = `${escapeHtml(type)} <span style="opacity:0.5;font-family:ui-monospace,monospace;font-size:10px;">${escapeHtml(tail)}</span>`;
+    }
+    const photoTag = `<span style="opacity:0.6;font-size:11px;">${s.photoCount} photo${s.photoCount === 1 ? '' : 's'}</span>`;
+    return `
+      <div data-action="select-node" data-node-id="${escapeHtml(s.nodeId)}"
+           title="Click to focus on map"
+           style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border-radius:4px;cursor:pointer;background:transparent;transition:background 120ms;">
+        <span style="font-weight:500;">${label}</span>
+        ${photoTag}
+      </div>
+    `;
+  }).join('');
+  const sectionRows = (connSamples || []).map(c => {
+    const a = c.scidA != null && c.scidA !== '' ? `SCID ${escapeHtml(c.scidA)}` : null;
+    const b = c.scidB != null && c.scidB !== '' ? `SCID ${escapeHtml(c.scidB)}` : null;
+    let label;
+    if (a && b) label = `Midspan ${a} ↔ ${b}`;
+    else if (a || b) label = `Midspan from ${a || b}`;
+    else {
+      const tail = String(c.sectionId).replace(/^-/, '').slice(-4);
+      label = `Midspan <span style="opacity:0.5;font-family:ui-monospace,monospace;font-size:10px;">${escapeHtml(tail)}</span>`;
+    }
+    const photoTag = `<span style="opacity:0.6;font-size:11px;">${c.photoCount} photo${c.photoCount === 1 ? '' : 's'}</span>`;
+    return `
+      <div data-action="select-section"
+           data-connection-id="${escapeHtml(c.connectionId)}"
+           data-section-id="${escapeHtml(c.sectionId)}"
+           title="Click to focus on map"
+           style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border-radius:4px;cursor:pointer;background:transparent;transition:background 120ms;">
+        <span style="font-weight:500;">${label}</span>
+        ${photoTag}
+      </div>
+    `;
+  }).join('');
+  if (!nodeRows && !sectionRows) return '';
+  const divider = nodeRows && sectionRows
+    ? `<div style="height:1px;background:#374151;margin:4px 4px;"></div>`
+    : '';
+  return `
+    <div style="margin-top:6px;max-height:220px;overflow-y:auto;background:#111827;border-radius:6px;padding:4px;">
+      ${nodeRows}${divider}${sectionRows}
+    </div>
+    <style>
+      #${UNSTARRED_BADGE_ID} [data-action="select-node"]:hover,
+      #${UNSTARRED_BADGE_ID} [data-action="select-section"]:hover { background: #374151 !important; }
+    </style>
+  `;
+}
+
+// Brand strip: clearly identifies the badge as coming from the Cloneable
+// extension so users don't confuse it with native Katapult UI. Uses the
+// extension's icon if it loads (web_accessible_resources lists icon16.png);
+// falls back gracefully to a plain "Cloneable" wordmark if not.
+// The dismiss × lives inside the strip (flex-end), so the divider terminates
+// cleanly at the badge edges and the × shares the brand row's baseline.
+function renderBrandStrip() {
+  let iconUrl = '';
+  try { iconUrl = chrome.runtime.getURL('icon16.png'); } catch (e) {}
+  return `
+    <div style="display:flex;align-items:center;gap:6px;padding-bottom:8px;margin-bottom:8px;border-bottom:1px solid #374151;color:#9ca3af;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;">
+      ${iconUrl ? `<img src="${iconUrl}" alt="Cloneable" width="14" height="14" style="display:block;border-radius:3px;">` : ''}
+      <span>Cloneable</span>
+      <button data-action="dismiss" title="Hide for this job"
+              style="margin-left:auto;width:20px;height:20px;display:flex;align-items:center;justify-content:center;background:transparent;color:#9ca3af;border:none;cursor:pointer;font-size:15px;line-height:1;padding:0;border-radius:4px;">×</button>
+    </div>
+  `;
+}
+
+function renderUnstarredBadge() {
+  ensureBadgeStyles();
+  const el = ensureBadgeElement();
+  const s = unstarredBadgeState;
+  // Show badge while busy, loading, when there's a non-zero count, OR while a
+  // success/error message is pending so the user actually sees the feedback.
+  const showable = s.enabled && (
+    s.loading || s.busy || s.count > 0 || s.connCount > 0 || !!s.feedback
+  );
+  // Honor the per-job dismiss, but never hide busy/feedback states (those are
+  // direct responses to user action).
+  const dismissed = s.dismissedJobId && s.dismissedJobId === s.jobId && !s.busy && !s.feedback;
+  if (!showable || dismissed) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = 'block';
+  // The brand strip now contains its own dismiss ×, so no separate close
+  // button is needed.
+  const brand = renderBrandStrip();
+  // Sticky errors get a "Dismiss" button so the user can clear them and return
+  // to the normal badge view.
+  const feedbackBanner = s.feedback ? renderFeedbackBanner(s.feedback) : '';
+  if (s.loading) {
+    el.innerHTML = `${brand}<div style="opacity:0.9;display:flex;align-items:center;gap:8px;"><span class="cloneable-spinner"></span><span>Loading job…</span></div>`;
+    return;
+  }
+  if (s.busy) {
+    el.innerHTML = `${brand}<div style="opacity:0.95;display:flex;align-items:center;gap:8px;"><span class="cloneable-spinner"></span><span>Starring height photos…</span></div>`;
+    return;
+  }
+  // Feedback-only view: success after the count drops to zero, or a sticky error.
+  if (s.feedback && s.count === 0 && s.connCount === 0) {
+    el.innerHTML = `${brand}${feedbackBanner}`;
+    return;
+  }
+  // Stack the headline by category so the bullet separator never orphans on
+  // wrap. Count is emphasized; descriptor is lighter weight.
+  const lines = [];
+  if (s.count > 0) {
+    lines.push(`<div><span style="font-weight:700;">${s.count}</span> <span style="font-weight:400;color:#e5e7eb;">node${s.count === 1 ? '' : 's'} missing main photo</span></div>`);
+  }
+  if (s.connCount > 0) {
+    lines.push(`<div><span style="font-weight:700;">${s.connCount}</span> <span style="font-weight:400;color:#e5e7eb;">section${s.connCount === 1 ? '' : 's'} missing main midspan</span></div>`);
+  }
+  const totalItems = (s.samples?.length || 0) + (s.connSamples?.length || 0);
+  const hasList = totalItems > 0;
+  // Quieter text-style expander — primary action stays visually dominant.
+  const detailsRow = hasList ? `
+    <div data-action="toggle-expand"
+         style="margin-top:10px;color:#9ca3af;font-size:11px;cursor:pointer;user-select:none;text-align:right;">
+      ${s.expanded
+        ? '▾ Hide details'
+        : `▸ Show ${totalItems} item${totalItems === 1 ? '' : 's'}`}
+    </div>
+  ` : '';
+  el.innerHTML = `
+    ${brand}
+    ${feedbackBanner}
+    <div style="line-height:1.45;">${lines.join('')}</div>
+    <div style="margin-top:6px;font-size:11px;color:#9ca3af;">Detects un-starred Cloneable height photos.</div>
+    <button data-action="autostar" style="margin-top:10px;background:#2563eb;color:#fff;border:none;padding:7px 10px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;width:100%;">Auto-star all</button>
+    ${detailsRow}
+    ${s.expanded ? renderUnstarredList(s.samples, s.connSamples) : ''}
+  `;
+}
+
+// Banner shown for success (green tick, auto-fades) or error (red, sticky with
+// dismiss). Lives inside the badge so the brand strip stays visible.
+function renderFeedbackBanner(fb) {
+  const isError = fb.kind === 'error';
+  const bg = isError ? '#7f1d1d' : '#065f46';
+  const border = isError ? '#b91c1c' : '#10b981';
+  const icon = isError
+    ? `<span style="font-weight:700;">!</span>`
+    : `<span style="font-weight:700;">✓</span>`;
+  const dismissBtn = fb.sticky
+    ? `<button data-action="dismiss-feedback" style="margin-left:auto;background:transparent;color:#fecaca;border:none;cursor:pointer;font-size:11px;padding:0 2px;line-height:1;">Dismiss</button>`
+    : '';
+  return `
+    <div style="margin-bottom:8px;padding:8px 10px;background:${bg};border-left:3px solid ${border};border-radius:4px;display:flex;align-items:center;gap:8px;font-size:12px;color:#fff;">
+      ${icon}<span>${escapeHtml(fb.message || '')}</span>${dismissBtn}
+    </div>
+  `;
+}
+
+function handleAutoStarClick() {
+  if (unstarredBadgeState.busy) return;
+  // Clear any prior feedback (e.g. lingering success from previous job).
+  clearTimeout(unstarredFeedbackTimer);
+  unstarredBadgeState.feedback = null;
+  unstarredBadgeState.busy = true;
+  renderUnstarredBadge();
+  const requestId = Date.now();
+  let settled = false;
+  const handler = (event) => {
+    if (!event.data || event.data.type !== 'cloneable-auto-star-result') return;
+    if (event.data.requestId !== requestId) return;
+    settled = true;
+    window.removeEventListener('message', handler);
+    unstarredBadgeState.busy = false;
+    const r = event.data.result || {};
+    if (r.applied) {
+      // Build a friendly success summary. The natural recount that follows
+      // Katapult's Firebase write round-trip will drop the count to whatever's
+      // truly left — usually 0, in which case the badge will hide itself
+      // after the 2.5s success window.
+      const bits = [];
+      if (r.nodeCount) bits.push(`${r.nodeCount} node${r.nodeCount === 1 ? '' : 's'}`);
+      if (r.connCount) bits.push(`${r.connCount} section${r.connCount === 1 ? '' : 's'}`);
+      const summary = bits.length ? `Starred ${bits.join(' + ')}` : 'Done';
+      setBadgeFeedback('success', summary);
+    } else if ((r.count ?? 0) === 0) {
+      setBadgeFeedback('success', r.message || 'Nothing to star');
+    } else {
+      // Real error — keep visible until the user dismisses.
+      setBadgeFeedback('error', r.message || 'Auto-star failed', { sticky: true });
+    }
+  };
+  window.addEventListener('message', handler);
+  window.postMessage({ type: 'cloneable-auto-star', requestId }, '*');
+  // Safety release if inject.js never responds (extension context broken, etc.)
+  setTimeout(() => {
+    if (settled) return;
+    window.removeEventListener('message', handler);
+    if (unstarredBadgeState.busy) {
+      unstarredBadgeState.busy = false;
+      setBadgeFeedback('error', 'Timed out — try again', { sticky: true });
+    }
+  }, 30000);
+}
+
+// Receive instant photo-change notification from inject.js's prototype patch
+// on KATAPULT-PHOTO-VIEWER.photoIdChanged. inject.js has already stripped the
+// data-cloneable-positioned attribute on any in-shadow stick line (CSS now
+// hides them), so we just need to re-apply at the new photo's marker
+// positions ASAP — animation frame + staggered retries to cover annotations
+// that haven't rendered yet.
+//
+// Gated on the user's toggle: if they turned extend off, a photo switch
+// shouldn't silently re-enable our overlay. We snapshot the preference into
+// the closure so each retry doesn't repay the storage round-trip.
+window.addEventListener('message', async (event) => {
+  if (!event.data || event.data.type !== 'cloneable-stick-line-reapply') return;
+  let extendStickLine;
+  try {
+    ({ extendStickLine } = await chrome.storage.local.get('extendStickLine'));
+  } catch (e) { return; } // extension context invalidated
+  if (extendStickLine === false) return;
+  const tryReapply = () => {
+    try { handleExtendStickLine(true); } catch (e) {}
+  };
+  requestAnimationFrame(tryReapply);
+  setTimeout(tryReapply, 100);
+  setTimeout(tryReapply, 300);
+  setTimeout(tryReapply, 700);
+});
+
+// Coerce incoming postMessage payload fields to safe primitive shapes before
+// putting them in state. We already escape-via-textContent at render time,
+// but defense in depth: ensure samples are plain objects with string IDs /
+// finite numbers so an exotic payload can't smuggle anything strange (e.g.
+// a getter that throws when read during render, or a non-string SCID that
+// stringifies to HTML).
+function coerceStr(v)   { return v == null ? null : String(v); }
+function coerceFiniteInt(v) { return Number.isFinite(v) ? Math.trunc(v) : 0; }
+function coerceNodeSample(s) {
+  if (!s || typeof s !== 'object') return null;
+  const nodeId = coerceStr(s.nodeId);
+  if (!nodeId) return null;
+  return {
+    kind: 'node',
+    nodeId,
+    scid: s.scid == null || s.scid === '' ? null : coerceStr(s.scid),
+    nodeType: s.nodeType == null ? null : coerceStr(s.nodeType),
+    photoCount: coerceFiniteInt(s.photoCount),
+  };
+}
+function coerceConnSample(c) {
+  if (!c || typeof c !== 'object') return null;
+  const connectionId = coerceStr(c.connectionId);
+  const sectionId = coerceStr(c.sectionId);
+  if (!connectionId || !sectionId) return null;
+  return {
+    kind: 'section',
+    connectionId,
+    sectionId,
+    photoCount: coerceFiniteInt(c.photoCount),
+    scidA: c.scidA == null || c.scidA === '' ? null : coerceStr(c.scidA),
+    scidB: c.scidB == null || c.scidB === '' ? null : coerceStr(c.scidB),
+  };
+}
+
+// Listen for unstarred-count + job-loading messages from inject.js
+window.addEventListener('message', (event) => {
+  if (!event.data || typeof event.data.type !== 'string') return;
+  if (event.data.type === 'cloneable-unstarred-count') {
+    const incomingJobId = coerceStr(event.data.jobId);
+    const jobChanged = unstarredBadgeState.jobId !== incomingJobId;
+    unstarredBadgeState.jobId = incomingJobId;
+    unstarredBadgeState.count = coerceFiniteInt(event.data.unstarredNodeCount);
+    unstarredBadgeState.connCount = coerceFiniteInt(event.data.unstarredConnectionCount);
+    unstarredBadgeState.samples = Array.isArray(event.data.samples)
+      ? event.data.samples.map(coerceNodeSample).filter(Boolean)
+      : [];
+    unstarredBadgeState.connSamples = Array.isArray(event.data.connSamples)
+      ? event.data.connSamples.map(coerceConnSample).filter(Boolean)
+      : [];
+    unstarredBadgeState.loading = false;
+    if (jobChanged) {
+      unstarredBadgeState.dismissedJobId = null;
+      unstarredBadgeState.expanded = false;
+    }
+    // If both counts drop to zero, collapse so the next job-with-issues starts collapsed.
+    if (unstarredBadgeState.count === 0 && unstarredBadgeState.connCount === 0) {
+      unstarredBadgeState.expanded = false;
+    }
+    renderUnstarredBadge();
+  } else if (event.data.type === 'cloneable-job-loading') {
+    const incomingJobId = coerceStr(event.data.jobId);
+    if (unstarredBadgeState.jobId !== incomingJobId) {
+      unstarredBadgeState.dismissedJobId = null;
+      unstarredBadgeState.expanded = false;
+    }
+    unstarredBadgeState.jobId = incomingJobId;
+    unstarredBadgeState.count = 0;
+    unstarredBadgeState.connCount = 0;
+    unstarredBadgeState.samples = [];
+    unstarredBadgeState.connSamples = [];
+    unstarredBadgeState.loading = true;
+    renderUnstarredBadge();
+  }
+});
+
+// Initial pref load + nudge inject.js for a count in case it already ran nodesLoaded.
+loadUnstarredBadgePref();
+setTimeout(() => window.postMessage({ type: 'cloneable-request-unstarred-count' }, '*'), 3000);
+
+// Inject a tiny stylesheet into each KATAPULT-PHOTO-VIEWER's shadow root that
+// hides any .stickLine which we haven't explicitly marked as positioned, but
+// only while the extend mode is on (body[data-cloneable-extend="on"]).
+//
+// Why this exists: .stickLine lives inside the photo viewer's Shadow DOM.
+// Document-level CSS can't reach in. When Katapult re-creates the element
+// (e.g. on a pole switch) our previous inline visibility:hidden goes with the
+// old element, so the fresh one momentarily paints at Katapult's default
+// position before our polling tick can re-anchor it. A shadow-root-scoped
+// stylesheet using :host-context() catches the fresh element by CSS rule,
+// no observer required.
+const CLONEABLE_HIDE_STYLE_ID = 'cloneable-hide-stickline';
+// Hide Katapult's native .stickLine only on photo viewers where we have an
+// active extended SVG overlay. We mark such viewers with data-cloneable-extend
+// on the host element; the stylesheet sees that via :host(). Photos whose
+// max calibration is below the Cloneable threshold never get the attribute,
+// so their native line stays visible — auto-fallback, no toggle needed.
+const CLONEABLE_HIDE_STYLE_CSS = `
+:host([data-cloneable-extend="on"]) .stickLine {
+  visibility: hidden !important;
+}
+`;
+function injectHideStyleIntoViewers() {
+  const viewers = deepQueryAll(document, 'katapult-photo-viewer');
+  for (const v of viewers) {
+    if (!v.shadowRoot) continue;
+    let style = v.shadowRoot.getElementById(CLONEABLE_HIDE_STYLE_ID);
+    if (!style) {
+      style = document.createElement('style');
+      style.id = CLONEABLE_HIDE_STYLE_ID;
+      v.shadowRoot.appendChild(style);
+    }
+    // Replace content if the rules changed (e.g. upgrading from a prior
+    // version that used a :host-context body selector).
+    if (style.textContent !== CLONEABLE_HIDE_STYLE_CSS) {
+      style.textContent = CLONEABLE_HIDE_STYLE_CSS;
+    }
+  }
+}
+
+// Parse one Katapult marker label into total feet, supporting all formats:
+//   "38'-5\""  (feet-inches with quotes)        38.4167
+//   "33.9'"    (decimal feet with quote)        33.9
+//   "4'8"      (feet'inches no dash)             4.6667
+//   "0'-0\""   (zero calibration)                0
+// Returns null if the text doesn't parse.
+function parseMarkerLabelToFeet(text) {
+  if (!text) return null;
+  const matchFeetInches = text.match(/^(\d+)'[\s-]*(\d+)"?$/);
+  if (matchFeetInches) return parseInt(matchFeetInches[1]) + parseInt(matchFeetInches[2]) / 12;
+  const matchDecimalFeet = text.match(/^(\d+\.?\d*)'$/);
+  if (matchDecimalFeet) return parseFloat(matchDecimalFeet[1]);
+  return null;
+}
+
+// Collect every parseable calibration marker in the live DOM. Single source of
+// truth — used by both handleExtendStickLine (to pick bottom + top for SVG)
+// and the polling tick (to detect drift). Returns an array of
+// { totalFeet, top, left, text } sorted ascending by totalFeet.
+function collectCalibrationPoints() {
+  const annotations = deepQueryAll(document, '.fixedSizeAnnotation');
+  const points = [];
+  for (const ann of annotations) {
+    const label = ann.querySelector('.markerLabel');
+    if (!label) continue;
+    const text = label.textContent.trim();
+    const totalFeet = parseMarkerLabelToFeet(text);
+    if (totalFeet === null) continue;
+    const top = parseFloat(ann.style.top);
+    const left = parseFloat(ann.style.left);
+    if (isNaN(top) || isNaN(left)) continue;
+    points.push({ totalFeet, top, left, text });
+  }
+  points.sort((a, b) => a.totalFeet - b.totalFeet);
+  return points;
+}
+
+// Periodically reconcile the extend-mode state with the live DOM. Three jobs:
+//   1. Keep body[data-cloneable-extend] in sync with the toggle so the
+//      shadow-root stylesheets engage / disengage.
+//   2. Inject the hide-stylesheet into any newly-attached photo viewers.
+//   3. Redraw our SVG line whenever the bottom or top calibration marker has
+//      moved (pole switch, marker re-tagging) or the SVG is missing (fresh
+//      viewer). Comparison is in % space because the markers' percentages are
+//      stable across zoom.
+const MARKER_DRIFT_TOLERANCE_PCT = 0.2;
 setInterval(async () => {
   let extendStickLine;
   try {
     ({ extendStickLine } = await chrome.storage.local.get('extendStickLine'));
   } catch (e) { return; } // Extension context invalidated
-  if (extendStickLine === false) return;
+  if (extendStickLine === false) {
+    // removeExtendedLineSvgs also clears each viewer's data-cloneable-extend
+    // attribute, so all native stick lines become visible again.
+    removeExtendedLineSvgs();
+    return;
+  }
+  injectHideStyleIntoViewers();
 
+  // Need at least a .stickLine present so we know the photo viewer is laid
+  // out with a height-calibration photo open. Its parent is also the right
+  // place to anchor our SVG.
   const stickLines = deepQueryAll(document, '.stickLine');
   if (stickLines.length === 0) return;
-
   const stickLine = stickLines[0];
-  const currentStyle = stickLine.style.cssText;
-  const parentHeight = stickLine.parentElement ? stickLine.parentElement.offsetHeight : 0;
 
-  // Re-apply if: Katapult re-rendered (style changed without our override),
-  // or parent resized (zoom in/out changed container dimensions)
-  const styleChanged = currentStyle !== lastStickLineStyle && !stickLine.style.getPropertyPriority('top');
-  const parentResized = parentHeight !== lastParentHeight && lastParentHeight > 0 && stickLine.style.getPropertyPriority('top');
-
-  if (styleChanged || parentResized) {
-    originalStickLineState = null;
-    const result = handleExtendStickLine(true);
-    if (result.applied) {
-      lastStickLineStyle = stickLines[0].style.cssText;
-      lastParentHeight = parentHeight;
+  // Compare current bottom AND top markers to what our last apply used. If
+  // either has drifted (or there was no last apply yet), call
+  // handleExtendStickLine to redraw. Tracking both ends ensures top-only
+  // marker changes (e.g. re-tagging the highest calibration) also trigger a
+  // redraw — previously only the bottom was watched.
+  const livePoints = collectCalibrationPoints();
+  const liveBottom = livePoints[0] || null;
+  const liveTop = livePoints[livePoints.length - 1] || null;
+  const ctx = stickLineLiveCtx;
+  let needsRedraw = !ctx || !ctx.parent?.isConnected;
+  const drifted = (a, b) => !a || !b ||
+    Math.abs(a.top - b.top) > MARKER_DRIFT_TOLERANCE_PCT ||
+    Math.abs(a.left - b.left) > MARKER_DRIFT_TOLERANCE_PCT;
+  if (!needsRedraw && (drifted(liveBottom, ctx.bottomCalPoint) || drifted(liveTop, ctx.topCalPoint))) {
+    needsRedraw = true;
+  }
+  // Also redraw if our SVG was somehow removed (Katapult re-renders, etc.)
+  if (!needsRedraw) {
+    const parent = stickLine.parentElement;
+    if (parent && !parent.querySelector(':scope > svg.' + CLONEABLE_SVG_CLASS)) {
+      needsRedraw = true;
     }
-  } else if (lastParentHeight === 0 && parentHeight > 0) {
-    lastParentHeight = parentHeight;
+  }
+  if (needsRedraw) {
+    originalStickLineState = null;
+    handleExtendStickLine(true);
   }
 }, 1500);
 
@@ -5188,6 +5851,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'TOGGLE_EXTEND_STICKLINE') {
     const result = handleExtendStickLine(message.enabled);
     sendResponse(result);
+    return;
+  }
+
+  if (message.type === 'TOGGLE_UNSTARRED_BADGE') {
+    unstarredBadgeState.enabled = !!message.enabled;
+    if (message.enabled) {
+      // Treat "show badge" as a deliberate user choice — clear any prior
+      // per-job dismiss so the badge actually comes back into view.
+      unstarredBadgeState.dismissedJobId = null;
+      // Ask inject.js for a fresh count so the badge populates immediately.
+      window.postMessage({ type: 'cloneable-request-unstarred-count' }, '*');
+    }
+    renderUnstarredBadge();
+    sendResponse({ applied: true, message: message.enabled ? 'Badge enabled' : 'Badge hidden' });
+    return;
+  }
+
+  // Popup queries this to render its own count summary even when the badge is
+  // dismissed/hidden on the page.
+  if (message.type === 'GET_UNSTARRED_COUNT') {
+    sendResponse({
+      jobId: unstarredBadgeState.jobId,
+      nodeCount: unstarredBadgeState.count,
+      connCount: unstarredBadgeState.connCount,
+      loading: unstarredBadgeState.loading,
+      busy: unstarredBadgeState.busy,
+      enabled: unstarredBadgeState.enabled,
+      isDismissed: !!(unstarredBadgeState.dismissedJobId && unstarredBadgeState.dismissedJobId === unstarredBadgeState.jobId),
+      hasSamples: (unstarredBadgeState.samples?.length || 0) + (unstarredBadgeState.connSamples?.length || 0),
+    });
+    return;
+  }
+
+  // Popup's "Show badge" action — undismiss + nudge a fresh count.
+  if (message.type === 'SHOW_UNSTARRED_BADGE') {
+    unstarredBadgeState.enabled = true;
+    unstarredBadgeState.dismissedJobId = null;
+    chrome.storage.local.set({ showUnstarredBadge: true });
+    window.postMessage({ type: 'cloneable-request-unstarred-count' }, '*');
+    renderUnstarredBadge();
+    sendResponse({ applied: true });
     return;
   }
 

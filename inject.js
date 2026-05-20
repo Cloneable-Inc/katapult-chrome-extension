@@ -1096,6 +1096,474 @@ function autoConfirmDoItAnyway() {
 // Expose for manual debugging in console
 window.autoCalibratePurpleMarkers = autoCalibratePurpleMarkers;
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Auto-star "main" photo on nodes that have height photos but no starred photo.
+//
+// "Starred" = `node.photos[photoId].association === 'main'`. We avoid touching
+// Firebase ourselves: we count via Katapult's in-memory node state and we star
+// via Katapult's own `KATAPULT-MAPS-DESKTOP.starPhotosInAssociation()` API,
+// which internally loads photo data and writes the updates. That keeps us off
+// FirebaseWorker and means the UI stays in sync via Katapult's normal eventing.
+//
+// Hooks: KATAPULT-MAPS-DESKTOP exposes Polymer observers
+//   nodes:   { observer: 'nodesLoaded' }   → fires on job load AND mutations
+//   job_id:  { observer: 'jobIdChanged' }  → fires on job switch
+// We wrap both to drive the unstarred-count badge.
+// ──────────────────────────────────────────────────────────────────────────────
+function findMapsDesktop() {
+  const seen = new WeakSet();
+  function walk(root) {
+    if (!root || seen.has(root)) return null;
+    seen.add(root);
+    if (root.tagName === 'KATAPULT-MAPS-DESKTOP') return root;
+    if (root.shadowRoot) {
+      const r = walk(root.shadowRoot);
+      if (r) return r;
+    }
+    const children = root.children || (root.host ? [root.host] : []);
+    for (const c of children) {
+      const r = walk(c);
+      if (r) return r;
+    }
+    return null;
+  }
+  return walk(document);
+}
+
+// Compute "nodes that have photos but no `association: 'main'`" from in-memory
+// state only. No async, no Firebase reads.
+//
+// NOTE: nodes live on both `KATAPULT-MAP` (window.katapultMap.nodes) and
+// `KATAPULT-MAPS-DESKTOP.nodes` (same reference), but `connections` only lives
+// on the desktop element — the inner map element has an empty .connections.
+// Always source both from the desktop element to stay consistent.
+function computeUnstarredNodes() {
+  const map = findMapsDesktop();
+  if (!map || !map.nodes) return null;
+  const nodes = map.nodes;
+  const connections = map.connections || {};
+  const unstarred = {};
+  const samples = [];
+  let totalWithPhotos = 0;
+  for (const [nodeId, node] of Object.entries(nodes)) {
+    if (!node || !node.photos) continue;
+    const photoIds = Object.keys(node.photos);
+    if (photoIds.length === 0) continue;
+    totalWithPhotos++;
+    if (map.getMainPhotoFromNodeId(nodeId)) continue;
+    unstarred[nodeId] = node;
+    // Capture a label for the UI tooltip.
+    const scid = node.attributes?.scid ? Object.values(node.attributes.scid)[0] : null;
+    const nodeType = node.attributes?.node_type ? Object.values(node.attributes.node_type)[0] : null;
+    samples.push({ kind: 'node', nodeId, scid, nodeType, photoCount: photoIds.length });
+  }
+  // Flag connection sections missing a main midspan photo. Final eligibility
+  // is applied later in refineEligibility via the same anchor_calibration
+  // height threshold we use for nodes.
+  const unstarredConnections = {};
+  const connSamples = [];
+  // Helper: pull SCID off a node by id (returns null if no SCID set).
+  const scidOf = (id) => {
+    const n = nodes[id];
+    return n?.attributes?.scid ? Object.values(n.attributes.scid)[0] : null;
+  };
+  for (const [cid, c] of Object.entries(connections)) {
+    if (!c || !c.sections) continue;
+    for (const [sid, s] of Object.entries(c.sections)) {
+      if (!s || !s.photos) continue;
+      const photoIds = Object.keys(s.photos);
+      if (photoIds.length === 0) continue;
+      const hasMain = photoIds.some(id =>
+        s.photos[id] === 'main' || s.photos[id]?.association === 'main'
+      );
+      if (hasMain) continue;
+      if (!unstarredConnections[cid]) unstarredConnections[cid] = { sections: {} };
+      unstarredConnections[cid].sections[sid] = s;
+      connSamples.push({
+        kind: 'section',
+        connectionId: cid,
+        sectionId: sid,
+        latitude: s.latitude,
+        longitude: s.longitude,
+        photoCount: photoIds.length,
+        // Endpoint SCIDs let the UI label sections by their pole pair, which
+        // is the only handle a field user actually recognizes.
+        scidA: scidOf(c.node_id_1),
+        scidB: scidOf(c.node_id_2),
+      });
+    }
+  }
+  return {
+    jobId: map.job_id || null,
+    nodesWithPhotos: totalWithPhotos,
+    unstarredNodeCount: Object.keys(unstarred).length,
+    unstarredConnectionCount: connSamples.length,    // section count, not connection count
+    unstarredNodes: unstarred,
+    unstarredConnections: unstarredConnections,
+    samples,
+    connSamples,
+  };
+}
+
+// Per-(job,photo,kind) eligibility cache. Photo metadata only changes when a
+// photo is re-tagged in PhotoFirst, which fires off Katapult's normal Firebase
+// listeners and would update kataputlMap.nodes — at which point our patched
+// nodesLoaded re-runs the count anyway. So caching here is safe for the life
+// of the page.
+const __photoEligibilityCache = new Map();
+
+// Lowest pole-height calibration we consider "Cloneable measurement." Matches
+// the stick-line extension's threshold in content.js (handleExtendStickLine).
+// Field techs tagging only ground-level attachments stay under this; Cloneable's
+// pole-inspection workflow produces calibrations that exceed it.
+const CLONEABLE_HEIGHT_THRESHOLD_FT = 20;
+
+function fbReadOnce(path) {
+  return new Promise(resolve => {
+    try {
+      const fw = window.FirebaseWorker;
+      if (!fw) return resolve(null);
+      fw.ref(path).once('value', snap => resolve(snap.val()), () => resolve(null));
+    } catch (e) {
+      resolve(null);
+    }
+    setTimeout(() => resolve(null), 8000);
+  });
+}
+
+// Compute the max anchor_calibration height for a photo, handling both numeric
+// and numeric-string values (Katapult stores both shapes depending on the
+// photo's origin). Returns null when the photo has no usable calibration.
+//
+// Cached per (jobId, photoId) — calibration data is essentially immutable for
+// the life of the page; if it's re-tagged in PhotoFirst, Katapult's own
+// listener pushes the change into katapultMap.nodes and our patched
+// nodesLoaded re-runs the count, so a fresh page load is the only way it could
+// go stale. Still safe.
+function getPhotoMaxAnchorHeight(jobId, photoId) {
+  const key = `${jobId}:${photoId}:maxHeight`;
+  if (__photoEligibilityCache.has(key)) return __photoEligibilityCache.get(key);
+  const promise = (async () => {
+    const anchorCal = await fbReadOnce(
+      `photoheight/jobs/${jobId}/photos/${photoId}/photofirst_data/anchor_calibration`
+    );
+    if (!anchorCal || typeof anchorCal !== 'object') return null;
+    const heights = Object.values(anchorCal)
+      .map(a => (a == null ? null : parseFloat(a.height)))
+      .filter(h => typeof h === 'number' && !isNaN(h));
+    if (heights.length === 0) return null;
+    return Math.max(...heights);
+  })();
+  __photoEligibilityCache.set(key, promise);
+  return promise;
+}
+
+// Photo eligibility: at least one anchor_calibration measurement exceeds the
+// Cloneable threshold (20 ft) — same rule the stick-line extension uses. No
+// dependency on any Katapult "type flag" (poleHeight / midspanHeight) since
+// those aren't consistently set across imports and don't actually carry the
+// height data anyway.
+async function photoMeetsHeightThreshold(jobId, photoId) {
+  const max = await getPhotoMaxAnchorHeight(jobId, photoId);
+  return max != null && max > CLONEABLE_HEIGHT_THRESHOLD_FT;
+}
+
+// Filter the candidate set down to items we can actually fix: a node or
+// section needs ≥1 photo whose anchor_calibration max exceeds the Cloneable
+// height threshold. Same rule for both — only the parent shape differs.
+async function refineEligibility(snapshot) {
+  if (!snapshot || !snapshot.jobId) return snapshot;
+  const jobId = snapshot.jobId;
+
+  const nodeChecks = (snapshot.samples || []).map(async s => {
+    const node = snapshot.unstarredNodes?.[s.nodeId];
+    if (!node?.photos) return { sample: s, eligible: false };
+    for (const pid of Object.keys(node.photos)) {
+      if (await photoMeetsHeightThreshold(jobId, pid)) return { sample: s, eligible: true };
+    }
+    return { sample: s, eligible: false };
+  });
+
+  const sectionChecks = (snapshot.connSamples || []).map(async c => {
+    const section = snapshot.unstarredConnections?.[c.connectionId]?.sections?.[c.sectionId];
+    if (!section?.photos) return { sample: c, eligible: false };
+    for (const pid of Object.keys(section.photos)) {
+      if (await photoMeetsHeightThreshold(jobId, pid)) return { sample: c, eligible: true };
+    }
+    return { sample: c, eligible: false };
+  });
+
+  const [nodeResults, sectionResults] = await Promise.all([
+    Promise.all(nodeChecks), Promise.all(sectionChecks),
+  ]);
+
+  const eligibleSamples = nodeResults.filter(r => r.eligible).map(r => r.sample);
+  const eligibleConnSamples = sectionResults.filter(r => r.eligible).map(r => r.sample);
+
+  // Rebuild filtered actionable sets to pass to starPhotosInAssociation.
+  const eligibleNodes = {};
+  for (const s of eligibleSamples) eligibleNodes[s.nodeId] = snapshot.unstarredNodes[s.nodeId];
+  const eligibleConnections = {};
+  for (const c of eligibleConnSamples) {
+    if (!eligibleConnections[c.connectionId]) eligibleConnections[c.connectionId] = { sections: {} };
+    eligibleConnections[c.connectionId].sections[c.sectionId] =
+      snapshot.unstarredConnections[c.connectionId].sections[c.sectionId];
+  }
+
+  return {
+    ...snapshot,
+    samples: eligibleSamples,
+    connSamples: eligibleConnSamples,
+    unstarredNodes: eligibleNodes,
+    unstarredConnections: eligibleConnections,
+    unstarredNodeCount: eligibleSamples.length,
+    unstarredConnectionCount: eligibleConnSamples.length,
+  };
+}
+
+let __cloneableRecountDebounce = null;
+let __cloneableRecountToken = 0;
+// Latest refined snapshot — autoStarUnstarredNodes uses this so the action
+// only touches photos that actually have height data.
+let __cloneableLastRefined = null;
+function scheduleUnstarredRecount(reason) {
+  clearTimeout(__cloneableRecountDebounce);
+  const myToken = ++__cloneableRecountToken;
+  __cloneableRecountDebounce = setTimeout(async () => {
+    const initial = computeUnstarredNodes();
+    if (!initial) return;
+    // If there are no candidates, skip the eligibility check entirely.
+    if (initial.unstarredNodeCount === 0 && initial.unstarredConnectionCount === 0) {
+      __cloneableLastRefined = initial;
+      window.postMessage({
+        type: 'cloneable-unstarred-count',
+        reason: reason || 'tick',
+        jobId: initial.jobId,
+        nodesWithPhotos: initial.nodesWithPhotos,
+        unstarredNodeCount: 0,
+        unstarredConnectionCount: 0,
+        samples: [],
+        connSamples: [],
+      }, '*');
+      return;
+    }
+    const refined = await refineEligibility(initial);
+    // Drop stale results if a newer recount has been scheduled since.
+    if (myToken !== __cloneableRecountToken) return;
+    __cloneableLastRefined = refined;
+    window.postMessage({
+      type: 'cloneable-unstarred-count',
+      reason: reason || 'tick',
+      jobId: refined.jobId,
+      nodesWithPhotos: refined.nodesWithPhotos,
+      unstarredNodeCount: refined.unstarredNodeCount,
+      unstarredConnectionCount: refined.unstarredConnectionCount,
+      samples: refined.samples.slice(0, 200),
+      connSamples: refined.connSamples.slice(0, 50),
+    }, '*');
+  }, 500);
+}
+
+function installStarHooks() {
+  const map = findMapsDesktop();
+  if (!map) return false;
+  if (map.__cloneableStarHooksInstalled) return true;
+  if (typeof map.nodesLoaded !== 'function' || typeof map.jobIdChanged !== 'function') return false;
+  map.__cloneableStarHooksInstalled = true;
+
+  const origNodesLoaded = map.nodesLoaded;
+  map.nodesLoaded = function() {
+    // Polymer observers can be invoked with (newValue, oldValue) — forward
+    // arguments so the original keeps any params it relies on.
+    const r = origNodesLoaded.apply(map, arguments);
+    try { scheduleUnstarredRecount('nodesLoaded'); } catch (e) {}
+    return r;
+  };
+
+  // Connections observer (separate from nodes). Section main-photo changes
+  // bubble through here, so wrap it to keep the count live as sections update.
+  if (typeof map._connectionsObserver === 'function') {
+    const origConnectionsObserver = map._connectionsObserver.bind(map);
+    map._connectionsObserver = function() {
+      const r = origConnectionsObserver.apply(map, arguments);
+      try { scheduleUnstarredRecount('connectionsChanged'); } catch (e) {}
+      return r;
+    };
+  }
+
+  const origJobIdChanged = map.jobIdChanged;
+  map.jobIdChanged = function() {
+    // Polymer observers can be invoked with (newValue, oldValue) — forward
+    // arguments so the original keeps any params it relies on.
+    const r = origJobIdChanged.apply(map, arguments);
+    try {
+      window.postMessage({
+        type: 'cloneable-job-loading',
+        jobId: map.job_id || null,
+      }, '*');
+    } catch (e) {}
+    return r;
+  };
+
+  // First count in case nodes are already loaded by the time we patched.
+  if (map.nodesAreLoaded) scheduleUnstarredRecount('install');
+  return true;
+}
+
+// KATAPULT-MAPS-DESKTOP may not exist at script eval time. Retry until it does,
+// then stop. (Comparable to the autoApplyStickLine retry loop in content.js.)
+(function waitForMapsDesktop() {
+  let attempts = 0;
+  const iv = setInterval(() => {
+    attempts++;
+    if (installStarHooks() || attempts > 60) clearInterval(iv);
+  }, 500);
+})();
+
+// Perform the auto-star. For every eligible node and section we pick the
+// photo with the highest anchor_calibration measurement above the Cloneable
+// threshold, then call Katapult's updateMainPhotoWithAssociation for that
+// (photoId, nodeId) or (photoId, connectionId, sectionId). Katapult's API does
+// the actual Firebase writes; we just supply the target.
+//
+// (We deliberately don't use Katapult's higher-level starPhotosInAssociation —
+// it internally gates on the photofirst_data.poleHeight type flag, which isn't
+// reliably set on older Cloneable imports.)
+async function autoStarUnstarredNodes() {
+  const map = findMapsDesktop();
+  if (!map || typeof map.updateMainPhotoWithAssociation !== 'function') {
+    return { applied: false, message: 'KATAPULT-MAPS-DESKTOP not ready' };
+  }
+  let snapshot = __cloneableLastRefined;
+  if (!snapshot) {
+    const initial = computeUnstarredNodes();
+    if (!initial) return { applied: false, message: 'No node data' };
+    snapshot = await refineEligibility(initial);
+    __cloneableLastRefined = snapshot;
+  }
+  const { jobId, unstarredNodes, unstarredConnections } = snapshot;
+  const nodeIds = Object.keys(unstarredNodes);
+  const connIds = Object.keys(unstarredConnections);
+  if (nodeIds.length === 0 && connIds.length === 0) {
+    return { applied: false, count: 0, message: 'Nothing to star' };
+  }
+
+  // For both nodes and sections, pick the photo with the highest
+  // anchor_calibration max above the Cloneable threshold.
+  let nodeStarred = 0;
+  let connStarred = 0;
+  const errors = [];
+
+  for (const nodeId of nodeIds) {
+    const node = unstarredNodes[nodeId];
+    const candidates = [];
+    for (const pid of Object.keys(node.photos || {})) {
+      const max = await getPhotoMaxAnchorHeight(jobId, pid);
+      if (max != null && max > CLONEABLE_HEIGHT_THRESHOLD_FT) candidates.push({ pid, max });
+    }
+    if (!candidates.length) continue;
+    candidates.sort((a, b) => b.max - a.max);
+    try {
+      await map.updateMainPhotoWithAssociation(candidates[0].pid, nodeId, null, null);
+      nodeStarred++;
+    } catch (e) {
+      errors.push({ nodeId, message: e?.message || String(e) });
+    }
+  }
+
+  // Star every eligible unstarred section in every connection (one main photo
+  // per section). Previous versions used a `break` after the first successful
+  // section per connection — that left other unstarred sections in the same
+  // connection still missing a main photo.
+  for (const cid of connIds) {
+    const conn = unstarredConnections[cid];
+    for (const [sid, section] of Object.entries(conn.sections || {})) {
+      // Same selection rule as poles: pick the section photo with the highest
+      // anchor_calibration measurement above the threshold.
+      const candidates = [];
+      for (const pid of Object.keys(section.photos || {})) {
+        const max = await getPhotoMaxAnchorHeight(jobId, pid);
+        if (max != null && max > CLONEABLE_HEIGHT_THRESHOLD_FT) candidates.push({ pid, max });
+      }
+      if (!candidates.length) continue;
+      candidates.sort((a, b) => b.max - a.max);
+      try {
+        await map.updateMainPhotoWithAssociation(candidates[0].pid, null, cid, sid);
+        connStarred++;
+      } catch (e) {
+        errors.push({ connectionId: cid, sectionId: sid, message: e?.message || String(e) });
+      }
+    }
+  }
+
+  setTimeout(() => scheduleUnstarredRecount('post-auto-star'), 1500);
+
+  const total = nodeStarred + connStarred;
+  return {
+    applied: total > 0,
+    count: total,
+    nodeCount: nodeStarred,
+    connCount: connStarred,
+    errors: errors.length ? errors : undefined,
+    message: total > 0
+      ? `Auto-starred ${nodeStarred} node${nodeStarred === 1 ? '' : 's'}${connStarred ? ` and ${connStarred} section${connStarred === 1 ? '' : 's'}` : ''}`
+      : 'No eligible photos found',
+  };
+}
+
+// Select a node on the map: opens its side panel + pans/zooms to it.
+// Mirrors what Katapult does when the user clicks a node icon. Verified via
+// non-destructive testing that {editing, editingNode, zoomToNode()} drives the
+// side panel + URL hash + map pan consistently.
+function selectNodeOnMap(nodeId) {
+  const map = findMapsDesktop();
+  if (!map) return { applied: false, message: 'KATAPULT-MAPS-DESKTOP not ready' };
+  if (!nodeId) return { applied: false, message: 'no nodeId' };
+  if (!map.nodes || !map.nodes[nodeId]) return { applied: false, message: 'node not found' };
+  try {
+    map.editing = 'Node';
+    map.editingNode = nodeId;
+    if (typeof map.zoomToNode === 'function') map.zoomToNode(nodeId);
+  } catch (e) {
+    return { applied: false, message: 'selectNode threw: ' + (e?.message || e) };
+  }
+  return { applied: true, nodeId };
+}
+
+// Select a section on the map. Section selection uses a different Polymer
+// trio than nodes: editing='Section' + activeConnection + activeSection drives
+// the side panel and URL hash. We also pan/zoom to the section's lat/lng since
+// there's no built-in zoomToSection equivalent.
+function selectSectionOnMap(connectionId, sectionId) {
+  const map = findMapsDesktop();
+  if (!map) return { applied: false, message: 'KATAPULT-MAPS-DESKTOP not ready' };
+  if (!connectionId || !sectionId) return { applied: false, message: 'missing ids' };
+  const section = map.connections?.[connectionId]?.sections?.[sectionId];
+  if (!section) return { applied: false, message: 'section not found' };
+  try {
+    map.editing = 'Section';
+    map.activeConnection = connectionId;
+    map.activeSection = sectionId;
+    // Best-effort pan/zoom — map.map is the google.maps.Map instance.
+    if (map.map && section.latitude != null && section.longitude != null && typeof google !== 'undefined') {
+      const ll = new google.maps.LatLng(section.latitude, section.longitude);
+      if (map.map.getCenter && map.map.getCenter() !== ll) map.map.panTo(ll);
+      if (typeof map.zoom === 'number' && map.zoom < 20 && typeof map.map.setZoom === 'function') {
+        map.map.setZoom(20);
+      }
+    }
+  } catch (e) {
+    return { applied: false, message: 'selectSection threw: ' + (e?.message || e) };
+  }
+  return { applied: true, connectionId, sectionId };
+}
+
+// Expose for console debugging
+window.cloneableComputeUnstarred = computeUnstarredNodes;
+window.cloneableAutoStar = autoStarUnstarredNodes;
+window.cloneableSelectNode = selectNodeOnMap;
+window.cloneableSelectSection = selectSectionOnMap;
+
 // Listen for reconstruction trigger from content script
 window.addEventListener('message', function(event) {
   if (event.data && event.data.type === 'cloneable-trigger-reconstruction') {
@@ -1117,6 +1585,37 @@ window.addEventListener('message', function(event) {
       requestId: event.data.requestId,
       result: result
     }, '*');
+  } else if (event.data && event.data.type === 'cloneable-request-unstarred-count') {
+    scheduleUnstarredRecount('request');
+  } else if (event.data && event.data.type === 'cloneable-auto-star') {
+    const requestId = event.data.requestId;
+    autoStarUnstarredNodes().then(result => {
+      window.postMessage({
+        type: 'cloneable-auto-star-result',
+        requestId,
+        result,
+      }, '*');
+    }).catch(e => {
+      window.postMessage({
+        type: 'cloneable-auto-star-result',
+        requestId,
+        result: { applied: false, message: 'rejected: ' + (e?.message || e) },
+      }, '*');
+    });
+  } else if (event.data && event.data.type === 'cloneable-select-node') {
+    const result = selectNodeOnMap(event.data.nodeId);
+    window.postMessage({
+      type: 'cloneable-select-node-result',
+      requestId: event.data.requestId,
+      result,
+    }, '*');
+  } else if (event.data && event.data.type === 'cloneable-select-section') {
+    const result = selectSectionOnMap(event.data.connectionId, event.data.sectionId);
+    window.postMessage({
+      type: 'cloneable-select-section-result',
+      requestId: event.data.requestId,
+      result,
+    }, '*');
   }
 });
 
@@ -1124,3 +1623,63 @@ window.addEventListener('message', function(event) {
 setTimeout(performReconstructionFinalization, 3000); // First pass
 setTimeout(performReconstructionFinalization, 6000); // Second pass
 setTimeout(performReconstructionFinalization, 10000); // Final thorough pass
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Stick-line snap fix: patch KATAPULT-PHOTO-VIEWER's photoIdChanged Polymer
+// observer so we instantly strip the .stickLine's data-cloneable-positioned
+// marker when the photo swaps. content.js's shadow-root stylesheet then hides
+// the line until handleExtendStickLine re-anchors it for the new photo. This
+// prevents the visible "snap from old pole's coords to new pole's coords"
+// that polling alone (1.5s) is too slow to mask.
+//
+// We patch the prototype once so all viewer instances (existing and future)
+// inherit the wrapper without us tracking instances individually. The patch
+// also posts a message to content.js so it can re-apply on the next animation
+// frame instead of waiting for the polling tick.
+// ──────────────────────────────────────────────────────────────────────────────
+function installStickLineHideOnPhotoChange() {
+  function deepQueryStickline(root, pred) {
+    const out = [];
+    function walk(el) {
+      if (!el) return;
+      if (el.shadowRoot) walk(el.shadowRoot);
+      const children = el.children || (el.host ? [el.host] : []);
+      for (const c of children) { if (pred(c)) out.push(c); walk(c); }
+    }
+    walk(root);
+    return out;
+  }
+  const sample = deepQueryStickline(document, el => el.tagName === 'KATAPULT-PHOTO-VIEWER')[0];
+  if (!sample) return false;
+  const proto = Object.getPrototypeOf(sample);
+  if (!proto || proto.__cloneableStickLineHidePatched) return true;
+  if (typeof proto.photoIdChanged !== 'function') return false;
+  proto.__cloneableStickLineHidePatched = true;
+  const orig = proto.photoIdChanged;
+  proto.photoIdChanged = function() {
+    const r = orig.apply(this, arguments);
+    // Remove our SVG overlay (if present) so we don't briefly show it at the
+    // previous photo's coordinates while the new photo's markers are still
+    // rendering. content.js's stick-line-reapply handler will redraw it
+    // against the new markers within a few frames.
+    try {
+      if (this.shadowRoot) {
+        const svgs = this.shadowRoot.querySelectorAll('svg.cloneable-extended-line');
+        for (const s of svgs) s.remove();
+      }
+    } catch (e) {}
+    try {
+      window.postMessage({ type: 'cloneable-stick-line-reapply' }, '*');
+    } catch (e) {}
+    return r;
+  };
+  return true;
+}
+
+(function waitForPhotoViewerProto() {
+  let attempts = 0;
+  const iv = setInterval(() => {
+    attempts++;
+    if (installStickLineHideOnPhotoChange() || attempts > 60) clearInterval(iv);
+  }, 500);
+})();
