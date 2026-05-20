@@ -4911,6 +4911,25 @@ let stickLineResizeObserver = null;
 let stickLineMutationObserver = null;
 let stickLineReassertScheduled = false;
 
+// Find the KATAPULT-PHOTO-VIEWER (shadow host) that contains the given element.
+// The native .stickLine and our SVG both live inside the viewer's shadow root,
+// so walking up getRootNode().host once gets us the viewer.
+function findViewerForShadowChild(el) {
+  if (!el) return null;
+  const root = el.getRootNode();
+  return root instanceof ShadowRoot ? root.host : null;
+}
+
+// Toggle the per-viewer hide attribute that the shadow-root stylesheet keys on.
+// Setting it engages the hide of Katapult's native .stickLine in that viewer;
+// clearing it makes the native line visible again (our fallback for photos
+// whose max calibration is below the Cloneable threshold).
+function setViewerHideNative(viewer, hide) {
+  if (!viewer) return;
+  if (hide) viewer.setAttribute('data-cloneable-extend', 'on');
+  else viewer.removeAttribute('data-cloneable-extend');
+}
+
 // Draw our extended-stick-line as an SVG line inside the same parent that holds
 // .stickLine. Pure pixel-space geometry — no CSS rotation, no aspect-ratio
 // gymnastics. The line passes from the bottom marker through the top marker,
@@ -4967,10 +4986,16 @@ function drawExtendedLineSvg(parent, bottomCalPoint, topCalPoint) {
   line.setAttribute('y1', by);
   line.setAttribute('x2', x2);
   line.setAttribute('y2', y2);
+
+  // Engage the hide on this specific viewer now that our SVG is anchored.
+  setViewerHideNative(findViewerForShadowChild(parent), true);
 }
 
 function removeExtendedLineSvgs() {
-  deepQueryAll(document, 'svg.' + CLONEABLE_SVG_CLASS).forEach(s => s.remove());
+  deepQueryAll(document, 'svg.' + CLONEABLE_SVG_CLASS).forEach(s => {
+    setViewerHideNative(findViewerForShadowChild(s), false);
+    s.remove();
+  });
 }
 
 function reassertStickLineStyle() {
@@ -5008,6 +5033,23 @@ function attachStickLineLiveUpdater(stickLine, parent, bottomCalPoint, topCalPoi
   try {
     stickLineMutationObserver.observe(stickLine, { attributes: true, attributeFilter: ['style'] });
   } catch (e) {}
+}
+
+// Helper: from any path inside handleExtendStickLine that decides we are NOT
+// extending this viewer's line, fall back cleanly to the native stick line by
+// removing our SVG and clearing the host attribute. Lets the native .stickLine
+// render normally for non-Cloneable photos (max calibration < 20 ft).
+function fallbackToNativeStickLine(stickLine, message) {
+  const viewer = findViewerForShadowChild(stickLine);
+  if (viewer) {
+    // Remove our SVG from this viewer's shadow root (if present) and clear
+    // the hide attribute so Katapult's native line becomes visible again.
+    if (viewer.shadowRoot) {
+      viewer.shadowRoot.querySelectorAll('svg.' + CLONEABLE_SVG_CLASS).forEach(s => s.remove());
+    }
+    setViewerHideNative(viewer, false);
+  }
+  return { applied: false, message };
 }
 
 // Handle extend stick line toggle
@@ -5053,7 +5095,7 @@ function handleExtendStickLine(enabled) {
   // Find all annotation markers to get calibration points
   const annotations = deepQueryAll(document, '.fixedSizeAnnotation');
   if (annotations.length === 0) {
-    return { applied: false, message: 'No calibration markers found' };
+    return fallbackToNativeStickLine(stickLine, 'No calibration markers found');
   }
 
   // Parse height values from marker labels and collect every readable point.
@@ -5089,7 +5131,7 @@ function handleExtendStickLine(enabled) {
   });
 
   if (calPoints.length === 0) {
-    return { applied: false, message: 'No height markers found' };
+    return fallbackToNativeStickLine(stickLine, 'No height markers found');
   }
 
   calPoints.sort((a, b) => a.totalFeet - b.totalFeet);
@@ -5097,9 +5139,11 @@ function handleExtendStickLine(enabled) {
   const topCalPoint = calPoints[calPoints.length - 1];
   const highestFeet = topCalPoint.totalFeet;
 
-  // Auto-detect: only apply if highest calibration > 20 feet (Cloneable measurement)
+  // Auto-detect: only extend on Cloneable measurements (max calibration above
+  // the 20 ft threshold). Photos like attachment-only shots, where all heights
+  // are low, fall back to Katapult's native short line.
   if (highestFeet <= 20) {
-    return { applied: false, message: 'Not a Cloneable measurement (max ' + Math.round(highestFeet) + '\')' };
+    return fallbackToNativeStickLine(stickLine, 'Not a Cloneable measurement (max ' + Math.round(highestFeet) + '\')');
   }
 
   // New approach (v1.46+): instead of fighting Katapult's CSS rotation on
@@ -5111,7 +5155,7 @@ function handleExtendStickLine(enabled) {
   const parentHeight = parent ? parent.offsetHeight : 0;
   const parentWidth = parent ? parent.offsetWidth : 0;
   if (!parent || !parentWidth || !parentHeight) {
-    return { applied: false, message: 'Photo viewer not laid out yet' };
+    return fallbackToNativeStickLine(stickLine, 'Photo viewer not laid out yet');
   }
 
   drawExtendedLineSvg(parent, bottomCalPoint, topCalPoint);
@@ -5154,16 +5198,10 @@ async function autoApplyStickLine() {
   }, 1000);
 }
 
-// Mark <body> as extend-mode-on so the shadow-root stylesheets actually engage.
-// Done as early as document allows; injectHideStyleIntoViewers handles the
-// shadow-root side as viewers appear.
-(async function initExtendMode() {
-  try {
-    const { extendStickLine } = await chrome.storage.local.get('extendStickLine');
-    if (extendStickLine !== false) {
-      document.body?.setAttribute('data-cloneable-extend', 'on');
-    }
-  } catch (e) {}
+// Make sure the hide-stylesheet is in every photo-viewer shadow root early.
+// (Per-viewer data-cloneable-extend attributes get set later when we actually
+// draw an SVG into a viewer — see drawExtendedLineSvg.)
+(function initExtendMode() {
   injectHideStyleIntoViewers();
 })();
 
@@ -5651,11 +5689,13 @@ setTimeout(() => window.postMessage({ type: 'cloneable-request-unstarred-count' 
 // stylesheet using :host-context() catches the fresh element by CSS rule,
 // no observer required.
 const CLONEABLE_HIDE_STYLE_ID = 'cloneable-hide-stickline';
-// Always hide Katapult's native .stickLine while extend mode is on. v1.46
-// replaced the rotation-based override with our own SVG overlay, so we don't
-// need a "positioned" marker anymore — the original line is just noise.
+// Hide Katapult's native .stickLine only on photo viewers where we have an
+// active extended SVG overlay. We mark such viewers with data-cloneable-extend
+// on the host element; the stylesheet sees that via :host(). Photos whose
+// max calibration is below the Cloneable threshold never get the attribute,
+// so their native line stays visible — auto-fallback, no toggle needed.
 const CLONEABLE_HIDE_STYLE_CSS = `
-:host-context(body[data-cloneable-extend="on"]) .stickLine {
+:host([data-cloneable-extend="on"]) .stickLine {
   visibility: hidden !important;
 }
 `;
@@ -5663,11 +5703,17 @@ function injectHideStyleIntoViewers() {
   const viewers = deepQueryAll(document, 'katapult-photo-viewer');
   for (const v of viewers) {
     if (!v.shadowRoot) continue;
-    if (v.shadowRoot.getElementById(CLONEABLE_HIDE_STYLE_ID)) continue;
-    const style = document.createElement('style');
-    style.id = CLONEABLE_HIDE_STYLE_ID;
-    style.textContent = CLONEABLE_HIDE_STYLE_CSS;
-    v.shadowRoot.appendChild(style);
+    let style = v.shadowRoot.getElementById(CLONEABLE_HIDE_STYLE_ID);
+    if (!style) {
+      style = document.createElement('style');
+      style.id = CLONEABLE_HIDE_STYLE_ID;
+      v.shadowRoot.appendChild(style);
+    }
+    // Replace content if the rules changed (e.g. upgrading from a prior
+    // version that used a :host-context body selector).
+    if (style.textContent !== CLONEABLE_HIDE_STYLE_CSS) {
+      style.textContent = CLONEABLE_HIDE_STYLE_CSS;
+    }
   }
 }
 
@@ -5710,11 +5756,11 @@ setInterval(async () => {
     ({ extendStickLine } = await chrome.storage.local.get('extendStickLine'));
   } catch (e) { return; } // Extension context invalidated
   if (extendStickLine === false) {
-    document.body?.removeAttribute('data-cloneable-extend');
+    // removeExtendedLineSvgs also clears each viewer's data-cloneable-extend
+    // attribute, so all native stick lines become visible again.
     removeExtendedLineSvgs();
     return;
   }
-  document.body?.setAttribute('data-cloneable-extend', 'on');
   injectHideStyleIntoViewers();
 
   // Need at least a .stickLine present so we know the photo viewer is laid
