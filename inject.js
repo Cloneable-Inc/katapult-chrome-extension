@@ -1297,12 +1297,15 @@ async function refineEligibility(snapshot) {
     return { sample: s, eligible: false };
   });
 
-  // Sections
+  // Sections — same Cloneable-measurement rule as poles: at least one photo
+  // must have an anchor_calibration measurement above 20 ft. midspanHeight is
+  // only a type flag (e.g. {over: "Driveway"}) — not reliable as a threshold
+  // source, and not consistently set on older imports anyway.
   const sectionChecks = (snapshot.connSamples || []).map(async c => {
     const section = snapshot.unstarredConnections?.[c.connectionId]?.sections?.[c.sectionId];
     if (!section?.photos) return { sample: c, eligible: false };
     for (const pid of Object.keys(section.photos)) {
-      if (await checkPhotoHasProp(jobId, pid, 'midspanHeight')) return { sample: c, eligible: true };
+      if (await checkIsPoleHeightPhoto(jobId, pid)) return { sample: c, eligible: true };
     }
     return { sample: c, eligible: false };
   });
@@ -1483,19 +1486,23 @@ async function autoStarUnstarredNodes() {
     const conn = unstarredConnections[cid];
     let starred = false;
     for (const [sid, section] of Object.entries(conn.sections || {})) {
+      // Same selection rule as poles: pick the section photo with the highest
+      // anchor_calibration measurement above the threshold.
+      const candidates = [];
       for (const pid of Object.keys(section.photos || {})) {
-        if (await checkPhotoHasProp(jobId, pid, 'midspanHeight')) {
-          try {
-            await map.updateMainPhotoWithAssociation(pid, null, cid, sid);
-            connStarred++;
-            starred = true;
-            break;
-          } catch (e) {
-            errors.push({ connectionId: cid, sectionId: sid, message: e?.message || String(e) });
-          }
-        }
+        const max = await getPhotoMaxAnchorHeight(jobId, pid);
+        if (max != null && max > CLONEABLE_HEIGHT_THRESHOLD_FT) candidates.push({ pid, max });
       }
-      if (starred) break;
+      if (!candidates.length) continue;
+      candidates.sort((a, b) => b.max - a.max);
+      try {
+        await map.updateMainPhotoWithAssociation(candidates[0].pid, null, cid, sid);
+        connStarred++;
+        starred = true;
+        break;
+      } catch (e) {
+        errors.push({ connectionId: cid, sectionId: sid, message: e?.message || String(e) });
+      }
     }
   }
 
