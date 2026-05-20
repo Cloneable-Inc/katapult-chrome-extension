@@ -1243,28 +1243,40 @@ function checkPhotoHasProp(jobId, photoId, prop) {
   return promise;
 }
 
-// Pole eligibility (stricter): photo must carry a poleHeight tag AND its
-// anchor_calibration markers must include at least one measurement above the
-// Cloneable threshold. poleHeight alone is a presence flag; the real height
-// values live in anchor_calibration entries (same source the stick-line uses).
-function checkIsPoleHeightPhoto(jobId, photoId) {
-  const key = `${jobId}:${photoId}:poleHeight+threshold`;
+// Compute the max anchor_calibration height for a photo, handling both numeric
+// and numeric-string values (Katapult stores both shapes depending on the
+// photo's origin). Returns null when the photo has no usable calibration.
+//
+// Cached per (jobId, photoId) — calibration data is essentially immutable for
+// the life of the page; if it's re-tagged in PhotoFirst, Katapult's own
+// listener pushes the change into katapultMap.nodes and our patched
+// nodesLoaded re-runs the count, so a fresh page load is the only way it could
+// stale. Still safe.
+function getPhotoMaxAnchorHeight(jobId, photoId) {
+  const key = `${jobId}:${photoId}:maxHeight`;
   if (__photoEligibilityCache.has(key)) return __photoEligibilityCache.get(key);
   const promise = (async () => {
-    const [poleTag, anchorCal] = await Promise.all([
-      fbReadOnce(`photoheight/jobs/${jobId}/photos/${photoId}/photofirst_data/poleHeight`),
-      fbReadOnce(`photoheight/jobs/${jobId}/photos/${photoId}/photofirst_data/anchor_calibration`),
-    ]);
-    if (poleTag == null) return false;
-    if (!anchorCal || typeof anchorCal !== 'object') return false;
+    const anchorCal = await fbReadOnce(
+      `photoheight/jobs/${jobId}/photos/${photoId}/photofirst_data/anchor_calibration`
+    );
+    if (!anchorCal || typeof anchorCal !== 'object') return null;
     const heights = Object.values(anchorCal)
-      .map(a => (a && typeof a.height === 'number') ? a.height : null)
-      .filter(h => h != null);
-    if (heights.length === 0) return false;
-    return Math.max(...heights) > CLONEABLE_HEIGHT_THRESHOLD_FT;
+      .map(a => (a == null ? null : parseFloat(a.height)))
+      .filter(h => typeof h === 'number' && !isNaN(h));
+    if (heights.length === 0) return null;
+    return Math.max(...heights);
   })();
   __photoEligibilityCache.set(key, promise);
   return promise;
+}
+
+// Pole eligibility: at least one anchor_calibration measurement exceeds the
+// Cloneable threshold (20 ft) — same rule the stick-line extension uses, and
+// crucially independent of the poleHeight flag, which is not consistently set
+// across older Cloneable imports.
+async function checkIsPoleHeightPhoto(jobId, photoId) {
+  const max = await getPhotoMaxAnchorHeight(jobId, photoId);
+  return max != null && max > CLONEABLE_HEIGHT_THRESHOLD_FT;
 }
 
 // Filter the candidate set down to only items Katapult's starPhotosInAssociation
@@ -1418,18 +1430,18 @@ function installStarHooks() {
   }, 500);
 })();
 
-// Perform the auto-star. We never call FirebaseWorker ourselves for writes —
-// we hand the *refined* (eligibility-checked) set to Katapult's
-// starPhotosInAssociation, which does the photo-data fetch + writes. The map's
-// own Firebase listener pushes the result back into katapultMap.nodes, which
-// triggers `nodesLoaded` → our patched wrapper → scheduleUnstarredRecount.
+// Perform the auto-star. We don't use Katapult's starPhotosInAssociation
+// because it gates on photofirst_data.poleHeight (a flag that older Cloneable
+// imports don't set, even on legitimate pole-height photos). Instead we pick
+// the best-eligible photo ourselves — the one whose anchor_calibration has the
+// highest measurement — and call Katapult's lower-level
+// updateMainPhotoWithAssociation per item. The actual Firebase writes still
+// happen inside Katapult's code; we just supply the (photoId, nodeId) target.
 async function autoStarUnstarredNodes() {
   const map = findMapsDesktop();
-  if (!map || typeof map.starPhotosInAssociation !== 'function') {
+  if (!map || typeof map.updateMainPhotoWithAssociation !== 'function') {
     return { applied: false, message: 'KATAPULT-MAPS-DESKTOP not ready' };
   }
-  // Prefer the cached refined snapshot (eligibility already verified). If the
-  // recount hasn't run yet, compute + refine inline.
   let snapshot = __cloneableLastRefined;
   if (!snapshot) {
     const initial = computeUnstarredNodes();
@@ -1437,25 +1449,68 @@ async function autoStarUnstarredNodes() {
     snapshot = await refineEligibility(initial);
     __cloneableLastRefined = snapshot;
   }
-  const { unstarredNodes, unstarredConnections } = snapshot;
-  const nodeCount = Object.keys(unstarredNodes).length;
-  const connCount = Object.keys(unstarredConnections).length;
-  if (nodeCount === 0 && connCount === 0) {
+  const { jobId, unstarredNodes, unstarredConnections } = snapshot;
+  const nodeIds = Object.keys(unstarredNodes);
+  const connIds = Object.keys(unstarredConnections);
+  if (nodeIds.length === 0 && connIds.length === 0) {
     return { applied: false, count: 0, message: 'Nothing to star' };
   }
-  try {
-    await map.starPhotosInAssociation(unstarredNodes, unstarredConnections);
-  } catch (e) {
-    return { applied: false, message: 'starPhotosInAssociation threw: ' + (e?.message || e) };
+
+  // For each node, pick the photo with the highest anchor_calibration max.
+  // For sections, pick any photo whose midspanHeight key exists.
+  let nodeStarred = 0;
+  let connStarred = 0;
+  const errors = [];
+
+  for (const nodeId of nodeIds) {
+    const node = unstarredNodes[nodeId];
+    const candidates = [];
+    for (const pid of Object.keys(node.photos || {})) {
+      const max = await getPhotoMaxAnchorHeight(jobId, pid);
+      if (max != null && max > CLONEABLE_HEIGHT_THRESHOLD_FT) candidates.push({ pid, max });
+    }
+    if (!candidates.length) continue;
+    candidates.sort((a, b) => b.max - a.max);
+    try {
+      await map.updateMainPhotoWithAssociation(candidates[0].pid, nodeId, null, null);
+      nodeStarred++;
+    } catch (e) {
+      errors.push({ nodeId, message: e?.message || String(e) });
+    }
   }
-  // Allow Katapult's Firebase write + listener round-trip before recounting.
+
+  for (const cid of connIds) {
+    const conn = unstarredConnections[cid];
+    let starred = false;
+    for (const [sid, section] of Object.entries(conn.sections || {})) {
+      for (const pid of Object.keys(section.photos || {})) {
+        if (await checkPhotoHasProp(jobId, pid, 'midspanHeight')) {
+          try {
+            await map.updateMainPhotoWithAssociation(pid, null, cid, sid);
+            connStarred++;
+            starred = true;
+            break;
+          } catch (e) {
+            errors.push({ connectionId: cid, sectionId: sid, message: e?.message || String(e) });
+          }
+        }
+      }
+      if (starred) break;
+    }
+  }
+
   setTimeout(() => scheduleUnstarredRecount('post-auto-star'), 1500);
+
+  const total = nodeStarred + connStarred;
   return {
-    applied: true,
-    count: nodeCount + connCount,
-    nodeCount,
-    connCount,
-    message: `Auto-starred ${nodeCount} node(s)` + (connCount ? ` and ${connCount} section(s)` : ''),
+    applied: total > 0,
+    count: total,
+    nodeCount: nodeStarred,
+    connCount: connStarred,
+    errors: errors.length ? errors : undefined,
+    message: total > 0
+      ? `Auto-starred ${nodeStarred} node${nodeStarred === 1 ? '' : 's'}${connStarred ? ` and ${connStarred} section${connStarred === 1 ? '' : 's'}` : ''}`
+      : 'No eligible photos found',
   };
 }
 
