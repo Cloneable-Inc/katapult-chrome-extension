@@ -5545,10 +5545,38 @@ window.addEventListener('message', (event) => {
 loadUnstarredBadgePref();
 setTimeout(() => window.postMessage({ type: 'cloneable-request-unstarred-count' }, '*'), 3000);
 
+// Locate the lowest-height visible calibration marker. Returns { top, left,
+// totalFeet } in % of parent, or null if no parseable label is found. Mirrors
+// the parsing logic inside handleExtendStickLine.
+function findCurrentBottomCalibration() {
+  const annotations = deepQueryAll(document, '.fixedSizeAnnotation');
+  let best = null;
+  for (const ann of annotations) {
+    const label = ann.querySelector('.markerLabel');
+    if (!label) continue;
+    const text = label.textContent.trim();
+    let totalFeet = null;
+    const matchFeetInches = text.match(/^(\d+)'[\s-]*(\d+)"?$/);
+    const matchDecimalFeet = text.match(/^(\d+\.?\d*)'$/);
+    if (matchFeetInches) totalFeet = parseInt(matchFeetInches[1]) + parseInt(matchFeetInches[2]) / 12;
+    else if (matchDecimalFeet) totalFeet = parseFloat(matchDecimalFeet[1]);
+    if (totalFeet === null) continue;
+    const top = parseFloat(ann.style.top);
+    const left = parseFloat(ann.style.left);
+    if (isNaN(top) || isNaN(left)) continue;
+    if (!best || totalFeet < best.totalFeet) best = { totalFeet, top, left };
+  }
+  return best;
+}
+
 // Periodically check if stick line needs re-applying (handles pole switches and zoom)
-// Shadow DOM mutations don't bubble to document.body, so polling is more reliable
+// Shadow DOM mutations don't bubble to document.body, so polling is more reliable.
 let lastStickLineStyle = '';
 let lastParentHeight = 0;
+// Tolerance in % when comparing the stick line's current `top`/`left` to the
+// bottom calibration marker. Small jitter happens during layout settle; >0.5%
+// is a real divergence (typically a pole switch).
+const BOTTOM_CAL_DRIFT_TOLERANCE_PCT = 0.5;
 setInterval(async () => {
   let extendStickLine;
   try {
@@ -5562,13 +5590,30 @@ setInterval(async () => {
   const stickLine = stickLines[0];
   const currentStyle = stickLine.style.cssText;
   const parentHeight = stickLine.parentElement ? stickLine.parentElement.offsetHeight : 0;
+  const hasOurOverride = !!stickLine.style.getPropertyPriority('top');
 
-  // Re-apply if: Katapult re-rendered (style changed without our override),
-  // or parent resized (zoom in/out changed container dimensions)
-  const styleChanged = currentStyle !== lastStickLineStyle && !stickLine.style.getPropertyPriority('top');
-  const parentResized = parentHeight !== lastParentHeight && lastParentHeight > 0 && stickLine.style.getPropertyPriority('top');
+  // Trigger 1 — Katapult re-rendered the stick line (our override is gone).
+  const styleChanged = currentStyle !== lastStickLineStyle && !hasOurOverride;
+  // Trigger 2 — parent resized while our override is in place (zoom).
+  const parentResized = parentHeight !== lastParentHeight && lastParentHeight > 0 && hasOurOverride;
+  // Trigger 3 — annotations moved to new positions but our style is still set
+  // (typical "switch poles" case: same viewer, same dimensions, new markers).
+  let bottomMoved = false;
+  if (hasOurOverride) {
+    const cur = findCurrentBottomCalibration();
+    if (cur) {
+      const appliedTop = parseFloat(stickLine.style.top);
+      const appliedLeft = parseFloat(stickLine.style.left);
+      if (!isNaN(appliedTop) && !isNaN(appliedLeft) && (
+        Math.abs(cur.top - appliedTop) > BOTTOM_CAL_DRIFT_TOLERANCE_PCT ||
+        Math.abs(cur.left - appliedLeft) > BOTTOM_CAL_DRIFT_TOLERANCE_PCT
+      )) {
+        bottomMoved = true;
+      }
+    }
+  }
 
-  if (styleChanged || parentResized) {
+  if (styleChanged || parentResized || bottomMoved) {
     originalStickLineState = null;
     const result = handleExtendStickLine(true);
     if (result.applied) {
