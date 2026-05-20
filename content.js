@@ -5545,6 +5545,23 @@ function handleAutoStarClick() {
   }, 30000);
 }
 
+// Receive instant photo-change notification from inject.js's prototype patch
+// on KATAPULT-PHOTO-VIEWER.photoIdChanged. inject.js has already stripped the
+// data-cloneable-positioned attribute on any in-shadow stick line (CSS now
+// hides them), so we just need to re-apply at the new photo's marker
+// positions ASAP — animation frame + staggered retries to cover annotations
+// that haven't rendered yet.
+window.addEventListener('message', (event) => {
+  if (!event.data || event.data.type !== 'cloneable-stick-line-reapply') return;
+  const tryReapply = () => {
+    try { handleExtendStickLine(true); } catch (e) {}
+  };
+  requestAnimationFrame(tryReapply);
+  setTimeout(tryReapply, 100);
+  setTimeout(tryReapply, 300);
+  setTimeout(tryReapply, 700);
+});
+
 // Listen for unstarred-count + job-loading messages from inject.js
 window.addEventListener('message', (event) => {
   if (!event.data || typeof event.data.type !== 'string') return;

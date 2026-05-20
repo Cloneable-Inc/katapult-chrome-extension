@@ -1618,3 +1618,59 @@ window.addEventListener('message', function(event) {
 setTimeout(performReconstructionFinalization, 3000); // First pass
 setTimeout(performReconstructionFinalization, 6000); // Second pass
 setTimeout(performReconstructionFinalization, 10000); // Final thorough pass
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Stick-line snap fix: patch KATAPULT-PHOTO-VIEWER's photoIdChanged Polymer
+// observer so we instantly strip the .stickLine's data-cloneable-positioned
+// marker when the photo swaps. content.js's shadow-root stylesheet then hides
+// the line until handleExtendStickLine re-anchors it for the new photo. This
+// prevents the visible "snap from old pole's coords to new pole's coords"
+// that polling alone (1.5s) is too slow to mask.
+//
+// We patch the prototype once so all viewer instances (existing and future)
+// inherit the wrapper without us tracking instances individually. The patch
+// also posts a message to content.js so it can re-apply on the next animation
+// frame instead of waiting for the polling tick.
+// ──────────────────────────────────────────────────────────────────────────────
+function installStickLineHideOnPhotoChange() {
+  function deepQueryStickline(root, pred) {
+    const out = [];
+    function walk(el) {
+      if (!el) return;
+      if (el.shadowRoot) walk(el.shadowRoot);
+      const children = el.children || (el.host ? [el.host] : []);
+      for (const c of children) { if (pred(c)) out.push(c); walk(c); }
+    }
+    walk(root);
+    return out;
+  }
+  const sample = deepQueryStickline(document, el => el.tagName === 'KATAPULT-PHOTO-VIEWER')[0];
+  if (!sample) return false;
+  const proto = Object.getPrototypeOf(sample);
+  if (!proto || proto.__cloneableStickLineHidePatched) return true;
+  if (typeof proto.photoIdChanged !== 'function') return false;
+  proto.__cloneableStickLineHidePatched = true;
+  const orig = proto.photoIdChanged;
+  proto.photoIdChanged = function() {
+    const r = orig.apply(this, arguments);
+    try {
+      if (this.shadowRoot) {
+        const lines = this.shadowRoot.querySelectorAll('.stickLine');
+        for (const line of lines) line.removeAttribute('data-cloneable-positioned');
+      }
+    } catch (e) {}
+    try {
+      window.postMessage({ type: 'cloneable-stick-line-reapply' }, '*');
+    } catch (e) {}
+    return r;
+  };
+  return true;
+}
+
+(function waitForPhotoViewerProto() {
+  let attempts = 0;
+  const iv = setInterval(() => {
+    attempts++;
+    if (installStickLineHideOnPhotoChange() || attempts > 60) clearInterval(iv);
+  }, 500);
+})();
