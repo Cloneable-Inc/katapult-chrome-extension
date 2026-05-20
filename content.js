@@ -4923,6 +4923,13 @@ function reassertStickLineStyle() {
   ctx.stickLine.style.setProperty('top', ctx.topPct + '%', 'important');
   ctx.stickLine.style.setProperty('left', ctx.leftPct + '%', 'important');
   ctx.stickLine.style.setProperty('z-index', '99999', 'important');
+  if (ctx.angleDeg != null) {
+    ctx.stickLine.style.setProperty(
+      'transform',
+      `translateY(-50%) rotate(${ctx.angleDeg}deg)`,
+      'important'
+    );
+  }
   if (stickLineMutationObserver) {
     try { stickLineMutationObserver.observe(ctx.stickLine, { attributes: true, attributeFilter: ['style'] }); } catch (e) {}
   }
@@ -4937,8 +4944,8 @@ function scheduleStickLineReassert() {
   });
 }
 
-function attachStickLineLiveUpdater(stickLine, parent, topPct, leftPct) {
-  stickLineLiveCtx = { stickLine, parent, topPct, leftPct };
+function attachStickLineLiveUpdater(stickLine, parent, topPct, leftPct, angleDeg) {
+  stickLineLiveCtx = { stickLine, parent, topPct, leftPct, angleDeg };
 
   if (stickLineResizeObserver) stickLineResizeObserver.disconnect();
   if (typeof ResizeObserver === 'function') {
@@ -4998,9 +5005,10 @@ function handleExtendStickLine(enabled) {
     return { applied: false, message: 'No calibration markers found' };
   }
 
-  // Parse height values from marker labels and find bottom/top calibration points
-  let bottomCalPoint = null;
-  let highestFeet = 0;
+  // Parse height values from marker labels and collect every readable point.
+  // We need the full list (not just bottom/top) so we can compute the line's
+  // angle from the actual pole tilt rather than relying on Katapult's transform.
+  const calPoints = [];
 
   annotations.forEach(ann => {
     const label = ann.querySelector('.markerLabel');
@@ -5026,22 +5034,38 @@ function handleExtendStickLine(enabled) {
 
     if (isNaN(top) || isNaN(left)) return;
 
-    // Track highest measurement
-    if (totalFeet > highestFeet) highestFeet = totalFeet;
-
-    // Bottom calibration = lowest height value (0'-0" or smallest)
-    if (!bottomCalPoint || totalFeet < bottomCalPoint.totalFeet) {
-      bottomCalPoint = { totalFeet, top, left, text };
-    }
+    calPoints.push({ totalFeet, top, left, text });
   });
 
-  if (!bottomCalPoint) {
+  if (calPoints.length === 0) {
     return { applied: false, message: 'No height markers found' };
   }
+
+  calPoints.sort((a, b) => a.totalFeet - b.totalFeet);
+  const bottomCalPoint = calPoints[0];
+  const topCalPoint = calPoints[calPoints.length - 1];
+  const highestFeet = topCalPoint.totalFeet;
 
   // Auto-detect: only apply if highest calibration > 20 feet (Cloneable measurement)
   if (highestFeet <= 20) {
     return { applied: false, message: 'Not a Cloneable measurement (max ' + Math.round(highestFeet) + '\')' };
+  }
+
+  // Compute the line's actual angle from the marker positions, in degrees,
+  // matching the CSS rotation convention (a horizontal line rotated by this
+  // angle should land on the markers). Katapult sometimes mis-signs the pole
+  // tilt, causing visible drift at the top of the line when extended — our
+  // best-fit angle through bottom → top calibration markers fixes that.
+  let stickLineAngleDeg = null;
+  if (calPoints.length >= 2) {
+    const dLeft = topCalPoint.left - bottomCalPoint.left;       // % units
+    const dTop = topCalPoint.top - bottomCalPoint.top;          // negative going up
+    if (Math.abs(dTop) > 0.01) {
+      // atan2(dTop, dLeft): angle from the +x axis to the vector pointing from
+      // the rotation origin (left end of horizontal line at bottom anchor)
+      // toward the top marker.
+      stickLineAngleDeg = Math.atan2(dTop, dLeft) * 180 / Math.PI;
+    }
   }
 
   // Move stick line to bottom calibration point, extend to top of image
@@ -5060,6 +5084,13 @@ function handleExtendStickLine(enabled) {
   stickLine.style.setProperty('top', bottomCalPoint.top + '%', 'important');
   stickLine.style.setProperty('left', bottomCalPoint.left + '%', 'important');
   stickLine.style.setProperty('z-index', '99999', 'important');
+  if (stickLineAngleDeg != null) {
+    stickLine.style.setProperty(
+      'transform',
+      `translateY(-50%) rotate(${stickLineAngleDeg}deg)`,
+      'important'
+    );
+  }
   // Mark this line as positioned. The hide-default stylesheet we inject into
   // each photo-viewer's shadow root hides any .stickLine without this
   // attribute, so when Katapult creates a fresh element on a pole switch the
@@ -5070,8 +5101,9 @@ function handleExtendStickLine(enabled) {
   stickLine.style.removeProperty('visibility');
 
   // Live-update the width while zoom / resize happens so the line doesn't
-  // visibly break between poll cycles.
-  if (parent) attachStickLineLiveUpdater(stickLine, parent, bottomCalPoint.top, bottomCalPoint.left);
+  // visibly break between poll cycles. Also re-applies our computed angle so
+  // Katapult's own transform updates don't override ours.
+  if (parent) attachStickLineLiveUpdater(stickLine, parent, bottomCalPoint.top, bottomCalPoint.left, stickLineAngleDeg);
 
   // Ensure parent containers don't clip the line
   let el = stickLine.parentElement;
