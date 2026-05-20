@@ -1157,8 +1157,9 @@ function computeUnstarredNodes() {
     const nodeType = node.attributes?.node_type ? Object.values(node.attributes.node_type)[0] : null;
     samples.push({ kind: 'node', nodeId, scid, nodeType, photoCount: photoIds.length });
   }
-  // Flag connection sections missing a main midspan photo. Katapult's
-  // starPhotosInAssociation handles sections too (using `midspanHeight`).
+  // Flag connection sections missing a main midspan photo. Final eligibility
+  // is applied later in refineEligibility via the same anchor_calibration
+  // height threshold we use for nodes.
   const unstarredConnections = {};
   const connSamples = [];
   // Helper: pull SCID off a node by id (returns null if no SCID set).
@@ -1176,8 +1177,6 @@ function computeUnstarredNodes() {
         s.photos[id] === 'main' || s.photos[id]?.association === 'main'
       );
       if (hasMain) continue;
-      // Build the full passthrough that Katapult's starPhotosInAssociation
-      // expects: { [cid]: { sections: { [sid]: {photos, latitude, longitude} } } }
       if (!unstarredConnections[cid]) unstarredConnections[cid] = { sections: {} };
       unstarredConnections[cid].sections[sid] = s;
       connSamples.push({
@@ -1232,17 +1231,6 @@ function fbReadOnce(path) {
   });
 }
 
-// Generic presence check (for midspanHeight, which is metadata-only — no
-// numeric value to threshold against).
-function checkPhotoHasProp(jobId, photoId, prop) {
-  const key = `${jobId}:${photoId}:${prop}`;
-  if (__photoEligibilityCache.has(key)) return __photoEligibilityCache.get(key);
-  const promise = fbReadOnce(`photoheight/jobs/${jobId}/photos/${photoId}/photofirst_data/${prop}`)
-    .then(v => v != null);
-  __photoEligibilityCache.set(key, promise);
-  return promise;
-}
-
 // Compute the max anchor_calibration height for a photo, handling both numeric
 // and numeric-string values (Katapult stores both shapes depending on the
 // photo's origin). Returns null when the photo has no usable calibration.
@@ -1251,7 +1239,7 @@ function checkPhotoHasProp(jobId, photoId, prop) {
 // the life of the page; if it's re-tagged in PhotoFirst, Katapult's own
 // listener pushes the change into katapultMap.nodes and our patched
 // nodesLoaded re-runs the count, so a fresh page load is the only way it could
-// stale. Still safe.
+// go stale. Still safe.
 function getPhotoMaxAnchorHeight(jobId, photoId) {
   const key = `${jobId}:${photoId}:maxHeight`;
   if (__photoEligibilityCache.has(key)) return __photoEligibilityCache.get(key);
@@ -1270,42 +1258,37 @@ function getPhotoMaxAnchorHeight(jobId, photoId) {
   return promise;
 }
 
-// Pole eligibility: at least one anchor_calibration measurement exceeds the
-// Cloneable threshold (20 ft) — same rule the stick-line extension uses, and
-// crucially independent of the poleHeight flag, which is not consistently set
-// across older Cloneable imports.
-async function checkIsPoleHeightPhoto(jobId, photoId) {
+// Photo eligibility: at least one anchor_calibration measurement exceeds the
+// Cloneable threshold (20 ft) — same rule the stick-line extension uses. No
+// dependency on any Katapult "type flag" (poleHeight / midspanHeight) since
+// those aren't consistently set across imports and don't actually carry the
+// height data anyway.
+async function photoMeetsHeightThreshold(jobId, photoId) {
   const max = await getPhotoMaxAnchorHeight(jobId, photoId);
   return max != null && max > CLONEABLE_HEIGHT_THRESHOLD_FT;
 }
 
-// Filter the candidate set down to only items Katapult's starPhotosInAssociation
-// can actually fix: a node needs ≥1 photo with photofirst_data.poleHeight; a
-// section needs ≥1 photo with photofirst_data.midspanHeight.
+// Filter the candidate set down to items we can actually fix: a node or
+// section needs ≥1 photo whose anchor_calibration max exceeds the Cloneable
+// height threshold. Same rule for both — only the parent shape differs.
 async function refineEligibility(snapshot) {
   if (!snapshot || !snapshot.jobId) return snapshot;
   const jobId = snapshot.jobId;
 
-  // Nodes — strict "Cloneable measurement" check: poleHeight tagged AND at
-  // least one anchor_calibration marker exceeds the height threshold.
   const nodeChecks = (snapshot.samples || []).map(async s => {
     const node = snapshot.unstarredNodes?.[s.nodeId];
     if (!node?.photos) return { sample: s, eligible: false };
     for (const pid of Object.keys(node.photos)) {
-      if (await checkIsPoleHeightPhoto(jobId, pid)) return { sample: s, eligible: true };
+      if (await photoMeetsHeightThreshold(jobId, pid)) return { sample: s, eligible: true };
     }
     return { sample: s, eligible: false };
   });
 
-  // Sections — same Cloneable-measurement rule as poles: at least one photo
-  // must have an anchor_calibration measurement above 20 ft. midspanHeight is
-  // only a type flag (e.g. {over: "Driveway"}) — not reliable as a threshold
-  // source, and not consistently set on older imports anyway.
   const sectionChecks = (snapshot.connSamples || []).map(async c => {
     const section = snapshot.unstarredConnections?.[c.connectionId]?.sections?.[c.sectionId];
     if (!section?.photos) return { sample: c, eligible: false };
     for (const pid of Object.keys(section.photos)) {
-      if (await checkIsPoleHeightPhoto(jobId, pid)) return { sample: c, eligible: true };
+      if (await photoMeetsHeightThreshold(jobId, pid)) return { sample: c, eligible: true };
     }
     return { sample: c, eligible: false };
   });
@@ -1433,13 +1416,15 @@ function installStarHooks() {
   }, 500);
 })();
 
-// Perform the auto-star. We don't use Katapult's starPhotosInAssociation
-// because it gates on photofirst_data.poleHeight (a flag that older Cloneable
-// imports don't set, even on legitimate pole-height photos). Instead we pick
-// the best-eligible photo ourselves — the one whose anchor_calibration has the
-// highest measurement — and call Katapult's lower-level
-// updateMainPhotoWithAssociation per item. The actual Firebase writes still
-// happen inside Katapult's code; we just supply the (photoId, nodeId) target.
+// Perform the auto-star. For every eligible node and section we pick the
+// photo with the highest anchor_calibration measurement above the Cloneable
+// threshold, then call Katapult's updateMainPhotoWithAssociation for that
+// (photoId, nodeId) or (photoId, connectionId, sectionId). Katapult's API does
+// the actual Firebase writes; we just supply the target.
+//
+// (We deliberately don't use Katapult's higher-level starPhotosInAssociation —
+// it internally gates on the photofirst_data.poleHeight type flag, which isn't
+// reliably set on older Cloneable imports.)
 async function autoStarUnstarredNodes() {
   const map = findMapsDesktop();
   if (!map || typeof map.updateMainPhotoWithAssociation !== 'function') {
@@ -1459,8 +1444,8 @@ async function autoStarUnstarredNodes() {
     return { applied: false, count: 0, message: 'Nothing to star' };
   }
 
-  // For each node, pick the photo with the highest anchor_calibration max.
-  // For sections, pick any photo whose midspanHeight key exists.
+  // For both nodes and sections, pick the photo with the highest
+  // anchor_calibration max above the Cloneable threshold.
   let nodeStarred = 0;
   let connStarred = 0;
   const errors = [];
