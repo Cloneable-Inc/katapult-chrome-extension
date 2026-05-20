@@ -3,282 +3,442 @@
 <head>
   <meta charset="utf-8">
   <style>
+    /* ──────────────────────────────────────────────────────────────────────
+       Cloneable for Katapult — popup
+       Single column, card-based layout. All element IDs preserved so popup.js
+       continues to work without changes.
+       ───────────────────────────────────────────────────────────────────── */
+
+    :root {
+      --bg: #ffffff;
+      --bg-card: #f9fafb;
+      --bg-card-hover: #f3f4f6;
+      --text: #111827;
+      --text-muted: #6b7280;
+      --text-subtle: #9ca3af;
+      --border: #e5e7eb;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --success: #047857;
+      --success-bg: #d1fae5;
+      --warning: #b45309;
+      --warning-bg: #fffbeb;
+      --warning-border: #fcd34d;
+      --danger: #b91c1c;
+      --danger-bg: #fee2e2;
+      --pill-dark: #1f2937;
+    }
+
+    * { box-sizing: border-box; }
+
     body {
-      width: 300px;
+      width: 340px;
+      margin: 0;
       padding: 16px;
+      background: var(--bg);
+      color: var(--text);
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    }
-    h2 {
-      margin-top: 0;
-      color: #333;
-      font-size: 18px;
-    }
-    p {
-      color: #666;
-      font-size: 14px;
-      line-height: 1.5;
-    }
-    .status {
-      padding: 8px 12px;
-      background-color: #f0f0f0;
-      border-radius: 4px;
       font-size: 13px;
-      margin-top: 12px;
+      line-height: 1.4;
     }
-    .active {
-      background-color: #e8f5e9;
-      color: #2e7d32;
+
+    /* ── Header ───────────────────────────────────────────────────────────── */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
     }
-    .export-section {
-      margin-top: 16px;
-      padding-top: 16px;
-      border-top: 1px solid #e0e0e0;
+    .header-icon {
+      width: 28px; height: 28px;
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      flex-shrink: 0;
     }
-    .export-btn {
-      background: #2196F3;
-      color: white;
-      border: none;
+    .header-icon img { width: 24px; height: 24px; display: block; }
+    .header-title-block { min-width: 0; flex: 1; }
+    .header-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+      letter-spacing: -0.01em;
+      cursor: pointer;
+      user-select: none;
+    }
+    .header-subtitle {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 1px;
+    }
+    .header-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: #d1d5db;
+      display: inline-block;
+      margin-right: 5px;
+      vertical-align: 1px;
+    }
+    .header-dot.connected { background: #10b981; }
+
+    /* ── Section header ──────────────────────────────────────────────────── */
+    .section-heading {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin: 16px 0 8px 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    /* ── Card ─────────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    /* ── Toggle row inside a card ─────────────────────────────────────────── */
+    .toggle-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
       padding: 10px 12px;
-      border-radius: 4px;
+      cursor: pointer;
+      transition: background 100ms;
+    }
+    .toggle-row:hover { background: var(--bg-card-hover); }
+    .toggle-row + .toggle-row { border-top: 1px solid var(--border); }
+    .toggle-row input[type="checkbox"] {
+      margin: 1px 0 0 0;
+      width: 14px; height: 14px;
+      accent-color: var(--primary);
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .toggle-body { flex: 1; min-width: 0; }
+    .toggle-label {
       font-size: 13px;
       font-weight: 500;
-      cursor: pointer;
-      width: 100%;
+      color: var(--text);
     }
-    .export-btn:hover {
-      background: #1976D2;
-    }
-    .export-btn:disabled {
-      background: #ccc;
-      cursor: not-allowed;
-    }
-    .export-hint {
+    .toggle-hint {
       font-size: 11px;
-      color: #666;
+      color: var(--text-muted);
+      margin-top: 2px;
+      line-height: 1.4;
+    }
+    .toggle-status {
+      font-size: 11px;
+      color: var(--text-muted);
       margin-top: 4px;
-    }
-    .domains-section {
-      margin-top: 16px;
-      padding-top: 16px;
-      border-top: 1px solid #e0e0e0;
-    }
-    .section-title {
-      font-size: 13px;
-      font-weight: 600;
-      color: #333;
-      margin-bottom: 8px;
-    }
-    .add-domain-btn {
-      background: #4CAF50;
-      color: white;
-      border: none;
-      padding: 8px 12px;
-      border-radius: 4px;
-      font-size: 12px;
-      cursor: pointer;
-      width: 100%;
-    }
-    .add-domain-btn:hover {
-      background: #45a049;
-    }
-    .add-domain-btn:disabled {
-      background: #ccc;
-      cursor: not-allowed;
-    }
-    .domain-list {
-      margin-top: 12px;
-    }
-    .domain-item {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 6px 8px;
-      background: #f5f5f5;
-      border-radius: 4px;
-      margin-bottom: 6px;
-      font-size: 12px;
-    }
-    .domain-name {
-      color: #333;
-      flex: 1;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .remove-btn {
-      background: #f44336;
-      color: white;
-      border: none;
-      padding: 3px 8px;
-      border-radius: 3px;
-      font-size: 10px;
-      cursor: pointer;
-      margin-left: 8px;
-    }
-    .remove-btn:hover {
-      background: #d32f2f;
-    }
-    .no-domains {
-      font-size: 11px;
-      color: #999;
       font-style: italic;
     }
-    .data-warning {
-      margin-top: 12px;
+
+    /* ── Job-status pill (live count) ─────────────────────────────────────── */
+    .job-status {
+      margin-top: 8px;
       padding: 10px 12px;
-      background: #fff3e0;
-      border: 1px solid #ffb74d;
+      background: var(--pill-dark);
+      color: #e5e7eb;
+      border-radius: 6px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .job-status.ok {
+      background: var(--success-bg);
+      color: var(--success);
+      border: 1px solid #a7f3d0;
+    }
+    .job-status.loading {
+      background: var(--bg-card);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+    .job-status.hidden { display: none; }
+    #unstarred-status-text { flex: 1; }
+    .show-unstarred-btn {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      padding: 5px 10px;
       border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .show-unstarred-btn:hover { background: var(--primary-hover); }
+
+    /* ── Primary CTA ─────────────────────────────────────────────────────── */
+    .primary-btn {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      width: 100%;
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 100ms;
+    }
+    .primary-btn:hover:not(:disabled) { background: var(--primary-hover); }
+    .primary-btn:disabled { background: #cbd5e1; color: #fff; cursor: not-allowed; }
+    .primary-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 6px;
+      text-align: center;
+    }
+
+    /* ── Data warning (conditional) ──────────────────────────────────────── */
+    .data-warning {
+      margin: 12px 0;
+      padding: 10px 12px;
+      background: var(--warning-bg);
+      border: 1px solid var(--warning-border);
+      border-radius: 6px;
     }
     .warning-text {
       font-size: 12px;
-      color: #e65100;
+      color: var(--warning);
       margin-bottom: 8px;
       line-height: 1.4;
     }
     .refresh-btn {
-      background: #FF9800;
-      color: white;
+      background: var(--warning);
+      color: #fff;
       border: none;
-      padding: 8px 12px;
+      padding: 6px 10px;
       border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+    }
+
+    /* ── Settings (collapsible footer) ────────────────────────────────────── */
+    details.settings {
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid var(--border);
+    }
+    details.settings > summary {
+      cursor: pointer;
+      list-style: none;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      user-select: none;
+    }
+    details.settings > summary::-webkit-details-marker { display: none; }
+    details.settings > summary::before {
+      content: '▸';
+      font-size: 9px;
+      transition: transform 150ms;
+      display: inline-block;
+    }
+    details.settings[open] > summary::before { transform: rotate(90deg); }
+    .settings-body { margin-top: 10px; }
+
+    /* ── Custom Domains ──────────────────────────────────────────────────── */
+    .add-domain-btn {
+      background: #fff;
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 7px 10px;
+      border-radius: 6px;
       font-size: 12px;
       font-weight: 500;
       cursor: pointer;
       width: 100%;
     }
-    .refresh-btn:hover {
-      background: #F57C00;
+    .add-domain-btn:hover:not(:disabled) { background: var(--bg-card); }
+    .add-domain-btn:disabled { background: var(--bg-card); color: var(--text-subtle); cursor: not-allowed; }
+    .domain-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+    .domain-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 10px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
     }
-    .stickline-section {
-      margin-top: 12px;
-      padding: 8px 12px;
-      background: #f5f5f5;
+    .domain-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .remove-btn {
+      background: transparent;
+      color: var(--danger);
+      border: 1px solid var(--border);
+      padding: 3px 8px;
       border-radius: 4px;
-    }
-    .toggle-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 13px;
-      color: #333;
-      cursor: pointer;
-    }
-    .toggle-label {
-      font-weight: 500;
-    }
-    .toggle-hint {
       font-size: 11px;
-      color: #888;
-      margin-top: 4px;
-    }
-    .env-section {
-      margin-top: 16px;
-      padding-top: 16px;
-      border-top: 1px solid #e0e0e0;
-    }
-    .env-toggle {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 13px;
-      color: #333;
-    }
-    .env-toggle label {
       cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 4px;
+      margin-left: 8px;
+    }
+    .remove-btn:hover { background: var(--danger-bg); }
+    .no-domains {
+      font-size: 11px;
+      color: var(--text-subtle);
+      font-style: italic;
+      padding: 4px 0;
+    }
+
+    /* ── Environment toggle (hidden until triple-tap) ─────────────────────── */
+    .env-section {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .env-row {
+      display: flex; align-items: center; gap: 10px;
+      font-size: 12px;
+      color: var(--text);
+    }
+    .env-row label {
+      cursor: pointer;
+      display: flex; align-items: center; gap: 4px;
     }
     .env-badge {
       display: inline-block;
       font-size: 10px;
-      font-weight: 600;
+      font-weight: 700;
       padding: 2px 6px;
-      border-radius: 3px;
+      border-radius: 4px;
       text-transform: uppercase;
+      letter-spacing: 0.04em;
     }
-    .env-badge.prod {
-      background: #e8f5e9;
-      color: #2e7d32;
+    .env-badge.prod { background: var(--success-bg); color: var(--success); }
+    .env-badge.dev { background: #fef3c7; color: var(--warning); }
+    #download-json-btn {
+      margin-top: 8px;
+      background: var(--warning);
+      color: #fff;
+      border: none;
+      padding: 7px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
     }
-    .env-badge.dev {
-      background: #fff3e0;
-      color: #e65100;
-    }
+    #download-json-btn:disabled { background: #cbd5e1; cursor: not-allowed; }
   </style>
 </head>
 <body>
-  <h2>Katapult to Cloneable</h2>
-  <p>Export models from Katapult Pro to Cloneable format.</p>
-  <div class="status" id="status">
-    Extension is ready
-  </div>
 
-  <div class="env-section" id="env-section" style="display: none;">
-    <div class="env-toggle">
-      <span class="section-title">Environment</span>
-      <label>
-        <input type="radio" name="environment" value="production" checked>
-        <span class="env-badge prod">Prod</span>
-      </label>
-      <label>
-        <input type="radio" name="environment" value="development">
-        <span class="env-badge dev">Dev</span>
-      </label>
+  <!-- HEADER -->
+  <div class="header">
+    <div class="header-icon">
+      <img src="icon48.png" alt="Cloneable">
     </div>
-    <button class="export-btn" id="download-json-btn" style="margin-top: 8px; background: #FF9800; font-size: 12px; padding: 6px 10px;" disabled>
-      Download Export JSON
-    </button>
+    <div class="header-title-block">
+      <!-- h2 retained for the triple-click dev-env reveal handler -->
+      <h2 class="header-title" id="status" style="margin:0;">Cloneable for Katapult</h2>
+      <div class="header-subtitle">
+        <span class="header-dot" id="header-dot"></span>
+        <span id="header-subtitle-text">Checking connection…</span>
+      </div>
+    </div>
   </div>
 
+  <!-- THIS JOB -->
+  <div id="this-job-block">
+    <div class="section-heading">This job</div>
+    <div id="unstarred-status" class="job-status loading">
+      <span id="unstarred-status-text">—</span>
+      <button id="show-unstarred-btn" class="show-unstarred-btn" style="display:none;">Show on map</button>
+    </div>
+  </div>
+
+  <!-- DATA WARNING (conditional) -->
   <div class="data-warning" id="data-warning" style="display: none;">
     <div class="warning-text">No model data captured. The page may have loaded before the extension.</div>
     <button class="refresh-btn" id="refresh-page-btn">Refresh Page to Capture Data</button>
   </div>
 
-  <div class="stickline-section" id="stickline-section">
-    <label class="toggle-row">
+  <!-- MAP TOOLS -->
+  <div class="section-heading">Map tools</div>
+  <div class="card">
+    <label class="toggle-row" id="stickline-section">
       <input type="checkbox" id="extend-stickline-toggle" checked>
-      <span class="toggle-label">Extend measurement line</span>
+      <div class="toggle-body">
+        <div class="toggle-label">Extend measurement line</div>
+        <div class="toggle-hint">Stretches the height stick to the top of pole-inspection photos</div>
+        <div class="toggle-status" id="stickline-status"></div>
+      </div>
     </label>
-    <div class="toggle-hint" id="stickline-status"></div>
-  </div>
 
-  <div class="stickline-section" id="autocalibrate-section">
-    <label class="toggle-row">
+    <label class="toggle-row" id="autocalibrate-section">
       <input type="checkbox" id="auto-calibrate-toggle" checked>
-      <span class="toggle-label">Auto-calibrate purple markers</span>
+      <div class="toggle-body">
+        <div class="toggle-label">Auto-calibrate purple markers</div>
+        <div class="toggle-hint">Runs Katapult's calibration on any photo with uncalibrated anchors</div>
+        <div class="toggle-status" id="autocalibrate-status"></div>
+      </div>
     </label>
-    <div class="toggle-hint" id="autocalibrate-status"></div>
-  </div>
 
-  <div class="stickline-section" id="auto-confirm-section">
-    <label class="toggle-row">
+    <label class="toggle-row" id="auto-confirm-section">
       <input type="checkbox" id="auto-confirm-toggle" checked>
-      <span class="toggle-label">Auto-confirm "Do it Anyway" dialog</span>
+      <div class="toggle-body">
+        <div class="toggle-label">Auto-confirm "Do it Anyway" dialog</div>
+        <div class="toggle-hint">Skips the calibration out-of-range confirmation</div>
+      </div>
     </label>
-    <div class="toggle-hint">Skips the calibration out-of-range confirmation</div>
+
+    <label class="toggle-row" id="unstarred-badge-section">
+      <input type="checkbox" id="unstarred-badge-toggle" checked>
+      <div class="toggle-body">
+        <div class="toggle-label">Show "missing main photo" badge</div>
+        <div class="toggle-hint">Floating count + one-click auto-star for Cloneable height photos</div>
+      </div>
+    </label>
   </div>
 
-  <div class="export-section">
-    <button class="export-btn" id="export-full-model-btn" disabled>
-      Export Full Model
-    </button>
-    <div class="export-hint">
-      Exports all types, attributes, annotations &amp; classifications
-    </div>
-  </div>
+  <!-- EXPORT -->
+  <div class="section-heading">Export</div>
+  <button class="primary-btn" id="export-full-model-btn" disabled>
+    Export Full Model
+  </button>
+  <div class="primary-hint">All types, attributes, annotations &amp; classifications</div>
 
-  <div class="domains-section">
-    <div class="section-title">Custom Domains</div>
-    <button class="add-domain-btn" id="add-domain-btn">
-      Add Current Domain
-    </button>
-    <div class="domain-list" id="domain-list">
-      <!-- Domain list will be populated by JS -->
+  <!-- SETTINGS (collapsed by default) -->
+  <details class="settings">
+    <summary>Settings</summary>
+    <div class="settings-body">
+      <button class="add-domain-btn" id="add-domain-btn">Add current domain</button>
+      <div class="domain-list" id="domain-list">
+        <!-- populated by domain-manager.js / popup.js -->
+      </div>
+
+      <!-- Environment toggle (hidden by default; triple-click on header title reveals) -->
+      <div class="env-section" id="env-section" style="display: none;">
+        <div class="env-row">
+          <span style="font-size:11px;font-weight:600;color:var(--text-muted);letter-spacing:0.06em;text-transform:uppercase;">Environment</span>
+          <label>
+            <input type="radio" name="environment" value="production" checked>
+            <span class="env-badge prod">Prod</span>
+          </label>
+          <label>
+            <input type="radio" name="environment" value="development">
+            <span class="env-badge dev">Dev</span>
+          </label>
+        </div>
+        <button id="download-json-btn" disabled>Download Export JSON</button>
+      </div>
     </div>
-  </div>
+  </details>
 
   <script src="domain-manager.js"></script>
   <script src="popup.js"></script>

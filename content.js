@@ -5128,6 +5128,423 @@ function requestAutoCalibrate() {
 setTimeout(requestAutoCalibrate, 4000);
 setInterval(requestAutoCalibrate, 2500);
 
+// ──────────────────────────────────────────────────────────────────────────────
+// Unstarred-nodes badge
+//
+// inject.js patches KATAPULT-MAPS-DESKTOP.nodesLoaded and posts
+// `cloneable-unstarred-count` messages with a count of nodes that have photos
+// but no `association: 'main'`. We render a small floating badge with that
+// count and a button that asks inject.js to call Katapult's
+// `starPhotosInAssociation` on the same set.
+//
+// Toggle: chrome.storage.local.showUnstarredBadge (default on).
+// ──────────────────────────────────────────────────────────────────────────────
+const UNSTARRED_BADGE_ID = 'cloneable-unstarred-badge';
+let unstarredBadgeState = {
+  jobId: null,
+  count: 0,
+  connCount: 0,       // count of unstarred sections
+  samples: [],        // [{ kind:'node', nodeId, scid, nodeType, photoCount }] from inject.js
+  connSamples: [],    // [{ kind:'section', connectionId, sectionId, photoCount }]
+  loading: false,
+  busy: false,        // true while auto-star is in flight
+  enabled: true,      // mirrors chrome.storage.local.showUnstarredBadge
+  expanded: false,    // expandable list of missing-photo nodes/sections
+  feedback: null,     // { kind: 'success'|'error', message: string, sticky: boolean }
+};
+let unstarredFeedbackTimer = null;
+
+// Inject CSS once for the spinner + transient feedback states.
+function ensureBadgeStyles() {
+  if (document.getElementById('cloneable-badge-style')) return;
+  const s = document.createElement('style');
+  s.id = 'cloneable-badge-style';
+  s.textContent = `
+    @keyframes cloneable-spin { to { transform: rotate(360deg); } }
+    .cloneable-spinner {
+      display:inline-block;
+      width:14px; height:14px;
+      border:2px solid rgba(255,255,255,0.25);
+      border-top-color:#fff;
+      border-radius:50%;
+      animation: cloneable-spin 0.8s linear infinite;
+      vertical-align:-3px;
+    }
+  `;
+  document.head.appendChild(s);
+}
+
+function setBadgeFeedback(kind, message, opts) {
+  clearTimeout(unstarredFeedbackTimer);
+  unstarredBadgeState.feedback = { kind, message, sticky: !!opts?.sticky };
+  renderUnstarredBadge();
+  if (!opts?.sticky) {
+    const ms = opts?.ms ?? 2500;
+    unstarredFeedbackTimer = setTimeout(() => {
+      unstarredBadgeState.feedback = null;
+      renderUnstarredBadge();
+    }, ms);
+  }
+}
+
+async function loadUnstarredBadgePref() {
+  try {
+    const { showUnstarredBadge } = await chrome.storage.local.get('showUnstarredBadge');
+    unstarredBadgeState.enabled = showUnstarredBadge !== false;
+  } catch (e) {
+    // extension context invalidated — leave default on
+  }
+  renderUnstarredBadge();
+}
+
+function ensureBadgeElement() {
+  let el = document.getElementById(UNSTARRED_BADGE_ID);
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = UNSTARRED_BADGE_ID;
+  Object.assign(el.style, {
+    position: 'fixed',
+    // Anchored to the bottom-left, offset to clear Katapult's vertical map-
+    // controls column (layer/location/compass/pegman, ~40px wide).
+    left: '60px',
+    bottom: '16px',
+    zIndex: '2147483646',
+    background: '#1f2937',
+    color: '#fff',
+    padding: '12px 14px',
+    borderRadius: '8px',
+    boxShadow: '0 4px 14px rgba(0,0,0,0.25)',
+    font: '13px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+    lineHeight: '1.35',
+    maxWidth: '280px',
+    display: 'none',
+  });
+  el.addEventListener('click', (e) => {
+    // Walk up to the nearest element carrying data-action — lets clicks on inner
+    // <span>s inside a row still resolve to the row's action.
+    let t = e.target;
+    while (t && t !== el && !t.dataset?.action) t = t.parentElement;
+    const action = t?.dataset?.action;
+    if (action === 'autostar') {
+      handleAutoStarClick();
+    } else if (action === 'dismiss') {
+      unstarredBadgeState.dismissedJobId = unstarredBadgeState.jobId;
+      renderUnstarredBadge();
+    } else if (action === 'toggle-expand') {
+      unstarredBadgeState.expanded = !unstarredBadgeState.expanded;
+      renderUnstarredBadge();
+    } else if (action === 'select-node') {
+      const nodeId = t.dataset.nodeId;
+      if (nodeId) selectUnstarredNode(nodeId);
+    } else if (action === 'select-section') {
+      const { connectionId, sectionId } = t.dataset;
+      if (connectionId && sectionId) selectUnstarredSection(connectionId, sectionId);
+    } else if (action === 'dismiss-feedback') {
+      clearTimeout(unstarredFeedbackTimer);
+      unstarredBadgeState.feedback = null;
+      renderUnstarredBadge();
+    }
+  });
+  document.documentElement.appendChild(el);
+  return el;
+}
+
+// Ask inject.js to select+pan to a node. Briefly highlight the row so the user
+// gets feedback that the click registered.
+function selectUnstarredNode(nodeId) {
+  const requestId = Date.now();
+  window.postMessage({ type: 'cloneable-select-node', requestId, nodeId }, '*');
+  flashRow(`[data-node-id="${cssEscape(nodeId)}"]`);
+}
+
+function selectUnstarredSection(connectionId, sectionId) {
+  const requestId = Date.now();
+  window.postMessage({
+    type: 'cloneable-select-section',
+    requestId, connectionId, sectionId,
+  }, '*');
+  flashRow(`[data-connection-id="${cssEscape(connectionId)}"][data-section-id="${cssEscape(sectionId)}"]`);
+}
+
+function flashRow(selectorFragment) {
+  const row = document.querySelector(`#${UNSTARRED_BADGE_ID} ${selectorFragment}`);
+  if (!row) return;
+  const prev = row.style.background;
+  row.style.background = '#374151';
+  setTimeout(() => { row.style.background = prev; }, 250);
+}
+
+// CSS.escape with a fallback for older engines / extension contexts.
+function cssEscape(s) {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(s);
+  return String(s).replace(/[^a-zA-Z0-9_-]/g, c => '\\' + c);
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+// Title-case a Katapult node_type string ("break point" → "Break point") so we
+// can fold it into the primary label without shouting.
+function titleCaseType(t) {
+  if (!t) return '';
+  return String(t).charAt(0).toUpperCase() + String(t).slice(1);
+}
+
+// Build the expandable list of missing-photo nodes + sections.
+// Labels are designed for field users:
+// - Nodes: "SCID 010" if SCID exists, else "Break point GxXe" (type + short id)
+// - Sections: "Section: SCID 005 ↔ 006" using the endpoint SCIDs from the
+//   connection, since a section ID by itself means nothing to the user.
+function renderUnstarredList(samples, connSamples) {
+  const nodeRows = (samples || []).map(s => {
+    let label;
+    if (s.scid != null && s.scid !== '') {
+      label = `SCID ${escapeHtml(s.scid)}`;
+    } else {
+      const type = titleCaseType(s.nodeType) || 'Node';
+      const tail = String(s.nodeId).replace(/^-/, '').slice(-4);
+      label = `${escapeHtml(type)} <span style="opacity:0.5;font-family:ui-monospace,monospace;font-size:10px;">${escapeHtml(tail)}</span>`;
+    }
+    const photoTag = `<span style="opacity:0.6;font-size:11px;">${s.photoCount} photo${s.photoCount === 1 ? '' : 's'}</span>`;
+    return `
+      <div data-action="select-node" data-node-id="${escapeHtml(s.nodeId)}"
+           title="Click to focus on map"
+           style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border-radius:4px;cursor:pointer;background:transparent;transition:background 120ms;">
+        <span style="font-weight:500;">${label}</span>
+        ${photoTag}
+      </div>
+    `;
+  }).join('');
+  const sectionRows = (connSamples || []).map(c => {
+    const a = c.scidA != null && c.scidA !== '' ? `SCID ${escapeHtml(c.scidA)}` : null;
+    const b = c.scidB != null && c.scidB !== '' ? `SCID ${escapeHtml(c.scidB)}` : null;
+    let label;
+    if (a && b) label = `Midspan ${a} ↔ ${b}`;
+    else if (a || b) label = `Midspan from ${a || b}`;
+    else {
+      const tail = String(c.sectionId).replace(/^-/, '').slice(-4);
+      label = `Midspan <span style="opacity:0.5;font-family:ui-monospace,monospace;font-size:10px;">${escapeHtml(tail)}</span>`;
+    }
+    const photoTag = `<span style="opacity:0.6;font-size:11px;">${c.photoCount} photo${c.photoCount === 1 ? '' : 's'}</span>`;
+    return `
+      <div data-action="select-section"
+           data-connection-id="${escapeHtml(c.connectionId)}"
+           data-section-id="${escapeHtml(c.sectionId)}"
+           title="Click to focus on map"
+           style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 8px;border-radius:4px;cursor:pointer;background:transparent;transition:background 120ms;">
+        <span style="font-weight:500;">${label}</span>
+        ${photoTag}
+      </div>
+    `;
+  }).join('');
+  if (!nodeRows && !sectionRows) return '';
+  const divider = nodeRows && sectionRows
+    ? `<div style="height:1px;background:#374151;margin:4px 4px;"></div>`
+    : '';
+  return `
+    <div style="margin-top:6px;max-height:220px;overflow-y:auto;background:#111827;border-radius:6px;padding:4px;">
+      ${nodeRows}${divider}${sectionRows}
+    </div>
+    <style>
+      #${UNSTARRED_BADGE_ID} [data-action="select-node"]:hover,
+      #${UNSTARRED_BADGE_ID} [data-action="select-section"]:hover { background: #374151 !important; }
+    </style>
+  `;
+}
+
+// Brand strip: clearly identifies the badge as coming from the Cloneable
+// extension so users don't confuse it with native Katapult UI. Uses the
+// extension's icon if it loads (web_accessible_resources lists icon16.png);
+// falls back gracefully to a plain "Cloneable" wordmark if not.
+// The dismiss × lives inside the strip (flex-end), so the divider terminates
+// cleanly at the badge edges and the × shares the brand row's baseline.
+function renderBrandStrip() {
+  let iconUrl = '';
+  try { iconUrl = chrome.runtime.getURL('icon16.png'); } catch (e) {}
+  return `
+    <div style="display:flex;align-items:center;gap:6px;padding-bottom:8px;margin-bottom:8px;border-bottom:1px solid #374151;color:#9ca3af;font-size:10px;letter-spacing:0.06em;text-transform:uppercase;font-weight:600;">
+      ${iconUrl ? `<img src="${iconUrl}" alt="Cloneable" width="14" height="14" style="display:block;border-radius:3px;">` : ''}
+      <span>Cloneable</span>
+      <button data-action="dismiss" title="Hide for this job"
+              style="margin-left:auto;width:20px;height:20px;display:flex;align-items:center;justify-content:center;background:transparent;color:#9ca3af;border:none;cursor:pointer;font-size:15px;line-height:1;padding:0;border-radius:4px;">×</button>
+    </div>
+  `;
+}
+
+function renderUnstarredBadge() {
+  ensureBadgeStyles();
+  const el = ensureBadgeElement();
+  const s = unstarredBadgeState;
+  // Show badge while busy, loading, when there's a non-zero count, OR while a
+  // success/error message is pending so the user actually sees the feedback.
+  const showable = s.enabled && (
+    s.loading || s.busy || s.count > 0 || s.connCount > 0 || !!s.feedback
+  );
+  // Honor the per-job dismiss, but never hide busy/feedback states (those are
+  // direct responses to user action).
+  const dismissed = s.dismissedJobId && s.dismissedJobId === s.jobId && !s.busy && !s.feedback;
+  if (!showable || dismissed) {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = 'block';
+  // The brand strip now contains its own dismiss ×, so no separate close
+  // button is needed.
+  const brand = renderBrandStrip();
+  // Sticky errors get a "Dismiss" button so the user can clear them and return
+  // to the normal badge view.
+  const feedbackBanner = s.feedback ? renderFeedbackBanner(s.feedback) : '';
+  if (s.loading) {
+    el.innerHTML = `${brand}<div style="opacity:0.9;display:flex;align-items:center;gap:8px;"><span class="cloneable-spinner"></span><span>Loading job…</span></div>`;
+    return;
+  }
+  if (s.busy) {
+    el.innerHTML = `${brand}<div style="opacity:0.95;display:flex;align-items:center;gap:8px;"><span class="cloneable-spinner"></span><span>Starring height photos…</span></div>`;
+    return;
+  }
+  // Feedback-only view: success after the count drops to zero, or a sticky error.
+  if (s.feedback && s.count === 0 && s.connCount === 0) {
+    el.innerHTML = `${brand}${feedbackBanner}`;
+    return;
+  }
+  // Stack the headline by category so the bullet separator never orphans on
+  // wrap. Count is emphasized; descriptor is lighter weight.
+  const lines = [];
+  if (s.count > 0) {
+    lines.push(`<div><span style="font-weight:700;">${s.count}</span> <span style="font-weight:400;color:#e5e7eb;">node${s.count === 1 ? '' : 's'} missing main photo</span></div>`);
+  }
+  if (s.connCount > 0) {
+    lines.push(`<div><span style="font-weight:700;">${s.connCount}</span> <span style="font-weight:400;color:#e5e7eb;">section${s.connCount === 1 ? '' : 's'} missing main midspan</span></div>`);
+  }
+  const totalItems = (s.samples?.length || 0) + (s.connSamples?.length || 0);
+  const hasList = totalItems > 0;
+  // Quieter text-style expander — primary action stays visually dominant.
+  const detailsRow = hasList ? `
+    <div data-action="toggle-expand"
+         style="margin-top:10px;color:#9ca3af;font-size:11px;cursor:pointer;user-select:none;text-align:right;">
+      ${s.expanded
+        ? '▾ Hide details'
+        : `▸ Show ${totalItems} item${totalItems === 1 ? '' : 's'}`}
+    </div>
+  ` : '';
+  el.innerHTML = `
+    ${brand}
+    ${feedbackBanner}
+    <div style="line-height:1.45;">${lines.join('')}</div>
+    <div style="margin-top:6px;font-size:11px;color:#9ca3af;">Detects un-starred Cloneable height photos.</div>
+    <button data-action="autostar" style="margin-top:10px;background:#2563eb;color:#fff;border:none;padding:7px 10px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;width:100%;">Auto-star all</button>
+    ${detailsRow}
+    ${s.expanded ? renderUnstarredList(s.samples, s.connSamples) : ''}
+  `;
+}
+
+// Banner shown for success (green tick, auto-fades) or error (red, sticky with
+// dismiss). Lives inside the badge so the brand strip stays visible.
+function renderFeedbackBanner(fb) {
+  const isError = fb.kind === 'error';
+  const bg = isError ? '#7f1d1d' : '#065f46';
+  const border = isError ? '#b91c1c' : '#10b981';
+  const icon = isError
+    ? `<span style="font-weight:700;">!</span>`
+    : `<span style="font-weight:700;">✓</span>`;
+  const dismissBtn = fb.sticky
+    ? `<button data-action="dismiss-feedback" style="margin-left:auto;background:transparent;color:#fecaca;border:none;cursor:pointer;font-size:11px;padding:0 2px;line-height:1;">Dismiss</button>`
+    : '';
+  return `
+    <div style="margin-bottom:8px;padding:8px 10px;background:${bg};border-left:3px solid ${border};border-radius:4px;display:flex;align-items:center;gap:8px;font-size:12px;color:#fff;">
+      ${icon}<span>${escapeHtml(fb.message || '')}</span>${dismissBtn}
+    </div>
+  `;
+}
+
+function handleAutoStarClick() {
+  if (unstarredBadgeState.busy) return;
+  // Clear any prior feedback (e.g. lingering success from previous job).
+  clearTimeout(unstarredFeedbackTimer);
+  unstarredBadgeState.feedback = null;
+  unstarredBadgeState.busy = true;
+  renderUnstarredBadge();
+  const requestId = Date.now();
+  let settled = false;
+  const handler = (event) => {
+    if (!event.data || event.data.type !== 'cloneable-auto-star-result') return;
+    if (event.data.requestId !== requestId) return;
+    settled = true;
+    window.removeEventListener('message', handler);
+    unstarredBadgeState.busy = false;
+    const r = event.data.result || {};
+    if (r.applied) {
+      // Build a friendly success summary. The natural recount that follows
+      // Katapult's Firebase write round-trip will drop the count to whatever's
+      // truly left — usually 0, in which case the badge will hide itself
+      // after the 2.5s success window.
+      const bits = [];
+      if (r.nodeCount) bits.push(`${r.nodeCount} node${r.nodeCount === 1 ? '' : 's'}`);
+      if (r.connCount) bits.push(`${r.connCount} section${r.connCount === 1 ? '' : 's'}`);
+      const summary = bits.length ? `Starred ${bits.join(' + ')}` : 'Done';
+      setBadgeFeedback('success', summary);
+    } else if ((r.count ?? 0) === 0) {
+      setBadgeFeedback('success', r.message || 'Nothing to star');
+    } else {
+      // Real error — keep visible until the user dismisses.
+      setBadgeFeedback('error', r.message || 'Auto-star failed', { sticky: true });
+    }
+  };
+  window.addEventListener('message', handler);
+  window.postMessage({ type: 'cloneable-auto-star', requestId }, '*');
+  // Safety release if inject.js never responds (extension context broken, etc.)
+  setTimeout(() => {
+    if (settled) return;
+    window.removeEventListener('message', handler);
+    if (unstarredBadgeState.busy) {
+      unstarredBadgeState.busy = false;
+      setBadgeFeedback('error', 'Timed out — try again', { sticky: true });
+    }
+  }, 30000);
+}
+
+// Listen for unstarred-count + job-loading messages from inject.js
+window.addEventListener('message', (event) => {
+  if (!event.data || typeof event.data.type !== 'string') return;
+  if (event.data.type === 'cloneable-unstarred-count') {
+    const jobChanged = unstarredBadgeState.jobId !== event.data.jobId;
+    unstarredBadgeState.jobId = event.data.jobId;
+    unstarredBadgeState.count = event.data.unstarredNodeCount || 0;
+    unstarredBadgeState.connCount = event.data.unstarredConnectionCount || 0;
+    unstarredBadgeState.samples = Array.isArray(event.data.samples) ? event.data.samples : [];
+    unstarredBadgeState.connSamples = Array.isArray(event.data.connSamples) ? event.data.connSamples : [];
+    unstarredBadgeState.loading = false;
+    if (jobChanged) {
+      unstarredBadgeState.dismissedJobId = null;
+      unstarredBadgeState.expanded = false;
+    }
+    // If both counts drop to zero, collapse so the next job-with-issues starts collapsed.
+    if (unstarredBadgeState.count === 0 && unstarredBadgeState.connCount === 0) {
+      unstarredBadgeState.expanded = false;
+    }
+    renderUnstarredBadge();
+  } else if (event.data.type === 'cloneable-job-loading') {
+    if (unstarredBadgeState.jobId !== event.data.jobId) {
+      unstarredBadgeState.dismissedJobId = null;
+      unstarredBadgeState.expanded = false;
+    }
+    unstarredBadgeState.jobId = event.data.jobId;
+    unstarredBadgeState.count = 0;
+    unstarredBadgeState.connCount = 0;
+    unstarredBadgeState.samples = [];
+    unstarredBadgeState.connSamples = [];
+    unstarredBadgeState.loading = true;
+    renderUnstarredBadge();
+  }
+});
+
+// Initial pref load + nudge inject.js for a count in case it already ran nodesLoaded.
+loadUnstarredBadgePref();
+setTimeout(() => window.postMessage({ type: 'cloneable-request-unstarred-count' }, '*'), 3000);
+
 // Periodically check if stick line needs re-applying (handles pole switches and zoom)
 // Shadow DOM mutations don't bubble to document.body, so polling is more reliable
 let lastStickLineStyle = '';
@@ -5188,6 +5605,47 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'TOGGLE_EXTEND_STICKLINE') {
     const result = handleExtendStickLine(message.enabled);
     sendResponse(result);
+    return;
+  }
+
+  if (message.type === 'TOGGLE_UNSTARRED_BADGE') {
+    unstarredBadgeState.enabled = !!message.enabled;
+    if (message.enabled) {
+      // Treat "show badge" as a deliberate user choice — clear any prior
+      // per-job dismiss so the badge actually comes back into view.
+      unstarredBadgeState.dismissedJobId = null;
+      // Ask inject.js for a fresh count so the badge populates immediately.
+      window.postMessage({ type: 'cloneable-request-unstarred-count' }, '*');
+    }
+    renderUnstarredBadge();
+    sendResponse({ applied: true, message: message.enabled ? 'Badge enabled' : 'Badge hidden' });
+    return;
+  }
+
+  // Popup queries this to render its own count summary even when the badge is
+  // dismissed/hidden on the page.
+  if (message.type === 'GET_UNSTARRED_COUNT') {
+    sendResponse({
+      jobId: unstarredBadgeState.jobId,
+      nodeCount: unstarredBadgeState.count,
+      connCount: unstarredBadgeState.connCount,
+      loading: unstarredBadgeState.loading,
+      busy: unstarredBadgeState.busy,
+      enabled: unstarredBadgeState.enabled,
+      isDismissed: !!(unstarredBadgeState.dismissedJobId && unstarredBadgeState.dismissedJobId === unstarredBadgeState.jobId),
+      hasSamples: (unstarredBadgeState.samples?.length || 0) + (unstarredBadgeState.connSamples?.length || 0),
+    });
+    return;
+  }
+
+  // Popup's "Show badge" action — undismiss + nudge a fresh count.
+  if (message.type === 'SHOW_UNSTARRED_BADGE') {
+    unstarredBadgeState.enabled = true;
+    unstarredBadgeState.dismissedJobId = null;
+    chrome.storage.local.set({ showUnstarredBadge: true });
+    window.postMessage({ type: 'cloneable-request-unstarred-count' }, '*');
+    renderUnstarredBadge();
+    sendResponse({ applied: true });
     return;
   }
 

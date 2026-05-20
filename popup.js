@@ -26,6 +26,9 @@ async function init() {
   // Load auto-confirm Do-it-Anyway preference
   await loadAutoConfirmPreference();
 
+  // Load "missing main photo" badge preference
+  await loadUnstarredBadgePreference();
+
   // Update status
   await updateStatus();
 
@@ -112,6 +115,89 @@ function toggleAutoConfirm(enabled) {
   chrome.storage.local.set({ autoConfirmDoItAnyway: enabled });
 }
 
+// Load "missing main photo" badge preference (default on)
+async function loadUnstarredBadgePreference() {
+  const { showUnstarredBadge } = await chrome.storage.local.get('showUnstarredBadge');
+  const enabled = showUnstarredBadge !== false;
+  document.getElementById('unstarred-badge-toggle').checked = enabled;
+}
+
+// Toggle "missing main photo" floating badge
+function toggleUnstarredBadge(enabled) {
+  chrome.storage.local.set({ showUnstarredBadge: enabled });
+  if (currentTab && contentScriptConnected) {
+    chrome.tabs.sendMessage(currentTab.id, {
+      type: 'TOGGLE_UNSTARRED_BADGE',
+      enabled: enabled
+    }, () => { void chrome.runtime.lastError; });
+  }
+  // Re-fetch the count so the popup's status row reflects the new state.
+  refreshUnstarredStatus();
+}
+
+// Pull the current refined count from the content script and render the
+// popup's status row + Show-on-map button. Safe to call repeatedly — no-ops
+// if the content script isn't reachable yet.
+function refreshUnstarredStatus() {
+  const textEl = document.getElementById('unstarred-status-text');
+  const btnEl = document.getElementById('show-unstarred-btn');
+  const rowEl = document.getElementById('unstarred-status');
+  if (!textEl || !btnEl || !rowEl) return;
+  const setClasses = (state) => {
+    rowEl.classList.remove('ok', 'loading');
+    if (state) rowEl.classList.add(state);
+  };
+  if (!currentTab || !contentScriptConnected) {
+    textEl.textContent = 'Not connected to Katapult';
+    btnEl.style.display = 'none';
+    setClasses('loading');
+    return;
+  }
+  chrome.tabs.sendMessage(currentTab.id, { type: 'GET_UNSTARRED_COUNT' }, (resp) => {
+    if (chrome.runtime.lastError || !resp) {
+      textEl.textContent = 'Waiting for job…';
+      btnEl.style.display = 'none';
+      setClasses('loading');
+      return;
+    }
+    const total = (resp.nodeCount || 0) + (resp.connCount || 0);
+    if (resp.loading) {
+      textEl.textContent = 'Loading job…';
+      btnEl.style.display = 'none';
+      setClasses('loading');
+      return;
+    }
+    if (total === 0) {
+      textEl.textContent = '✓ All eligible photos starred';
+      btnEl.style.display = 'none';
+      setClasses('ok');
+      return;
+    }
+    setClasses(null);  // dark pill
+    const parts = [];
+    if (resp.nodeCount) parts.push(`${resp.nodeCount} node${resp.nodeCount === 1 ? '' : 's'}`);
+    if (resp.connCount) parts.push(`${resp.connCount} section${resp.connCount === 1 ? '' : 's'}`);
+    textEl.textContent = `Missing main photo: ${parts.join(' + ')}`;
+    // Offer "Show on map" only when the badge is currently hidden — either by
+    // toggle or per-job dismiss. Otherwise the badge is already visible.
+    const badgeIsVisible = resp.enabled && !resp.isDismissed;
+    btnEl.style.display = badgeIsVisible ? 'none' : 'inline-block';
+  });
+}
+
+// Click handler for "Show on map" — un-dismisses the badge and re-enables it
+// if it was toggled off in this popup session.
+function handleShowUnstarred() {
+  if (!currentTab || !contentScriptConnected) return;
+  document.getElementById('unstarred-badge-toggle').checked = true;
+  chrome.tabs.sendMessage(currentTab.id, { type: 'SHOW_UNSTARRED_BADGE' }, () => {
+    void chrome.runtime.lastError;
+    refreshUnstarredStatus();
+    // Close the popup so the user can see the badge they just summoned.
+    setTimeout(() => window.close(), 200);
+  });
+}
+
 // Check if model data has been captured
 function checkDataStatus() {
   if (!currentTab) return;
@@ -155,15 +241,24 @@ async function injectAndReload(tabId) {
   await chrome.tabs.reload(tabId);
 }
 
+// Helper: paint the small subtitle + dot underneath the brand title.
+function setHeaderState(text, connected) {
+  const subtitle = document.getElementById('header-subtitle-text');
+  const dot = document.getElementById('header-dot');
+  if (subtitle) subtitle.textContent = text;
+  if (dot) dot.classList.toggle('connected', !!connected);
+}
+
 // Update status based on current tab
 async function updateStatus() {
-  const statusElement = document.getElementById('status');
   const addDomainBtn = document.getElementById('add-domain-btn');
   const exportFullModelBtn = document.getElementById('export-full-model-btn');
   const downloadJsonBtn = document.getElementById('download-json-btn');
+  const thisJobBlock = document.getElementById('this-job-block');
 
   if (!currentTab || !currentTab.url) {
-    statusElement.textContent = 'No active tab';
+    setHeaderState('No active tab', false);
+    if (thisJobBlock) thisJobBlock.style.display = 'none';
     addDomainBtn.disabled = true;
     exportFullModelBtn.disabled = true;
     downloadJsonBtn.disabled = true;
@@ -179,8 +274,8 @@ async function updateStatus() {
     contentScriptConnected = await pingContentScript(currentTab.id);
 
     if (contentScriptConnected) {
-      statusElement.textContent = `Active on ${domain}`;
-      statusElement.classList.add('active');
+      setHeaderState(`Connected · ${domain}`, true);
+      if (thisJobBlock) thisJobBlock.style.display = '';
       exportFullModelBtn.disabled = false;
       downloadJsonBtn.disabled = false;
 
@@ -190,9 +285,12 @@ async function updateStatus() {
       // Apply stick line preference
       const toggle = document.getElementById('extend-stickline-toggle');
       toggleStickLine(toggle.checked);
+
+      // Render the unstarred-count status row + Show-on-map button
+      refreshUnstarredStatus();
     } else {
-      statusElement.textContent = `Reconnecting to ${domain}...`;
-      statusElement.classList.remove('active');
+      setHeaderState(`Reconnecting to ${domain}…`, false);
+      if (thisJobBlock) thisJobBlock.style.display = 'none';
       exportFullModelBtn.disabled = true;
       downloadJsonBtn.disabled = true;
 
@@ -201,21 +299,21 @@ async function updateStatus() {
 
       // Show a message — the popup will close on reload, but if it stays open
       // the user knows what happened
-      statusElement.textContent = 'Page refreshed — reopen to export';
+      setHeaderState('Page refreshed — reopen to export', false);
     }
 
     // Check if it's a model editor page
     const isModelEditor = isModelEditorUrl(currentTab.url);
     if (isModelEditor) {
       addDomainBtn.disabled = true;
-      addDomainBtn.textContent = 'Already Active';
+      addDomainBtn.textContent = 'Already added';
     } else {
       addDomainBtn.disabled = true;
-      addDomainBtn.textContent = 'Not on Model Editor';
+      addDomainBtn.textContent = 'Not on Katapult';
     }
   } else {
-    statusElement.textContent = `Inactive on ${domain}`;
-    statusElement.classList.remove('active');
+    setHeaderState(`Inactive on ${domain}`, false);
+    if (thisJobBlock) thisJobBlock.style.display = 'none';
     exportFullModelBtn.disabled = true;
     downloadJsonBtn.disabled = true;
 
@@ -223,10 +321,10 @@ async function updateStatus() {
     const isModelEditor = isModelEditorUrl(currentTab.url);
     if (isModelEditor) {
       addDomainBtn.disabled = false;
-      addDomainBtn.textContent = 'Add Current Domain';
+      addDomainBtn.textContent = 'Add current domain';
     } else {
       addDomainBtn.disabled = true;
-      addDomainBtn.textContent = 'Not on Model Editor';
+      addDomainBtn.textContent = 'Not on Katapult';
     }
   }
 }
@@ -290,6 +388,14 @@ function setupEventListeners() {
   document.getElementById('auto-confirm-toggle').addEventListener('change', (e) => {
     toggleAutoConfirm(e.target.checked);
   });
+
+  // "Missing main photo" badge toggle
+  document.getElementById('unstarred-badge-toggle').addEventListener('change', (e) => {
+    toggleUnstarredBadge(e.target.checked);
+  });
+
+  // "Show on map" — undismiss the badge from the popup
+  document.getElementById('show-unstarred-btn').addEventListener('click', handleShowUnstarred);
 
   // Environment radio buttons
   document.querySelectorAll('input[name="environment"]').forEach(radio => {
