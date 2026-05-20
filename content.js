@@ -4986,6 +4986,9 @@ function handleExtendStickLine(enabled) {
     if (stickLineResizeObserver) { stickLineResizeObserver.disconnect(); stickLineResizeObserver = null; }
     if (stickLineMutationObserver) { stickLineMutationObserver.disconnect(); stickLineMutationObserver = null; }
     stickLineLiveCtx = null;
+    // Remove the positioned marker; the body attr is cleared by the polling tick
+    // or by toggleStickLine in popup, so the hide-stylesheet won't fire either way.
+    stickLine.removeAttribute('data-cloneable-positioned');
     return { applied: true, message: 'Restored original line' };
   }
 
@@ -5057,8 +5060,13 @@ function handleExtendStickLine(enabled) {
   stickLine.style.setProperty('top', bottomCalPoint.top + '%', 'important');
   stickLine.style.setProperty('left', bottomCalPoint.left + '%', 'important');
   stickLine.style.setProperty('z-index', '99999', 'important');
-  // If we'd hidden the line earlier (pole switch / drift), restore visibility
-  // now that it's anchored to the correct marker positions.
+  // Mark this line as positioned. The hide-default stylesheet we inject into
+  // each photo-viewer's shadow root hides any .stickLine without this
+  // attribute, so when Katapult creates a fresh element on a pole switch the
+  // user never sees it at the default position.
+  stickLine.setAttribute('data-cloneable-positioned', '');
+  // Clear any prior visibility override (legacy from v1.41 — now the shadow-
+  // root stylesheet handles it, but defensive cleanup is cheap).
   stickLine.style.removeProperty('visibility');
 
   // Live-update the width while zoom / resize happens so the line doesn't
@@ -5098,6 +5106,19 @@ async function autoApplyStickLine() {
     }
   }, 1000);
 }
+
+// Mark <body> as extend-mode-on so the shadow-root stylesheets actually engage.
+// Done as early as document allows; injectHideStyleIntoViewers handles the
+// shadow-root side as viewers appear.
+(async function initExtendMode() {
+  try {
+    const { extendStickLine } = await chrome.storage.local.get('extendStickLine');
+    if (extendStickLine !== false) {
+      document.body?.setAttribute('data-cloneable-extend', 'on');
+    }
+  } catch (e) {}
+  injectHideStyleIntoViewers();
+})();
 
 // Start auto-apply after a delay to let the page render
 setTimeout(autoApplyStickLine, 3000);
@@ -5563,6 +5584,35 @@ window.addEventListener('message', (event) => {
 loadUnstarredBadgePref();
 setTimeout(() => window.postMessage({ type: 'cloneable-request-unstarred-count' }, '*'), 3000);
 
+// Inject a tiny stylesheet into each KATAPULT-PHOTO-VIEWER's shadow root that
+// hides any .stickLine which we haven't explicitly marked as positioned, but
+// only while the extend mode is on (body[data-cloneable-extend="on"]).
+//
+// Why this exists: .stickLine lives inside the photo viewer's Shadow DOM.
+// Document-level CSS can't reach in. When Katapult re-creates the element
+// (e.g. on a pole switch) our previous inline visibility:hidden goes with the
+// old element, so the fresh one momentarily paints at Katapult's default
+// position before our polling tick can re-anchor it. A shadow-root-scoped
+// stylesheet using :host-context() catches the fresh element by CSS rule,
+// no observer required.
+const CLONEABLE_HIDE_STYLE_ID = 'cloneable-hide-stickline';
+const CLONEABLE_HIDE_STYLE_CSS = `
+:host-context(body[data-cloneable-extend="on"]) .stickLine:not([data-cloneable-positioned]) {
+  visibility: hidden !important;
+}
+`;
+function injectHideStyleIntoViewers() {
+  const viewers = deepQueryAll(document, 'katapult-photo-viewer');
+  for (const v of viewers) {
+    if (!v.shadowRoot) continue;
+    if (v.shadowRoot.getElementById(CLONEABLE_HIDE_STYLE_ID)) continue;
+    const style = document.createElement('style');
+    style.id = CLONEABLE_HIDE_STYLE_ID;
+    style.textContent = CLONEABLE_HIDE_STYLE_CSS;
+    v.shadowRoot.appendChild(style);
+  }
+}
+
 // Locate the lowest-height visible calibration marker. Returns { top, left,
 // totalFeet } in % of parent, or null if no parseable label is found. Mirrors
 // the parsing logic inside handleExtendStickLine.
@@ -5600,7 +5650,15 @@ setInterval(async () => {
   try {
     ({ extendStickLine } = await chrome.storage.local.get('extendStickLine'));
   } catch (e) { return; } // Extension context invalidated
-  if (extendStickLine === false) return;
+  // Keep the body flag and shadow-root stylesheets in sync with the toggle.
+  // Cheap idempotent ops — setAttribute is a no-op if the value is unchanged
+  // and injectHideStyleIntoViewers skips viewers that already have the style.
+  if (extendStickLine === false) {
+    document.body?.removeAttribute('data-cloneable-extend');
+    return;
+  }
+  document.body?.setAttribute('data-cloneable-extend', 'on');
+  injectHideStyleIntoViewers();
 
   const stickLines = deepQueryAll(document, '.stickLine');
   if (stickLines.length === 0) return;
