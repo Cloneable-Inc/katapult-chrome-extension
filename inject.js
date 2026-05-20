@@ -1653,10 +1653,14 @@ function installStickLineHideOnPhotoChange() {
   const orig = proto.photoIdChanged;
   proto.photoIdChanged = function() {
     const r = orig.apply(this, arguments);
+    // Remove our SVG overlay (if present) so we don't briefly show it at the
+    // previous photo's coordinates while the new photo's markers are still
+    // rendering. content.js's stick-line-reapply handler will redraw it
+    // against the new markers within a few frames.
     try {
       if (this.shadowRoot) {
-        const lines = this.shadowRoot.querySelectorAll('.stickLine');
-        for (const line of lines) line.removeAttribute('data-cloneable-positioned');
+        const svgs = this.shadowRoot.querySelectorAll('svg.cloneable-extended-line');
+        for (const s of svgs) s.remove();
       }
     } catch (e) {}
     try {

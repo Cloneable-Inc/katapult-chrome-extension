@@ -4911,28 +4911,74 @@ let stickLineResizeObserver = null;
 let stickLineMutationObserver = null;
 let stickLineReassertScheduled = false;
 
+// Draw our extended-stick-line as an SVG line inside the same parent that holds
+// .stickLine. Pure pixel-space geometry — no CSS rotation, no aspect-ratio
+// gymnastics. The line passes from the bottom marker through the top marker,
+// then is extrapolated to the top of the image so it spans the full visible
+// pole. Idempotent: reuses an existing SVG if present.
+const CLONEABLE_SVG_CLASS = 'cloneable-extended-line';
+function drawExtendedLineSvg(parent, bottomCalPoint, topCalPoint) {
+  const pw = parent.offsetWidth;
+  const ph = parent.offsetHeight;
+  if (!pw || !ph) return;
+
+  // Convert % positions to pixels.
+  const bx = (bottomCalPoint.left / 100) * pw;
+  const by = (bottomCalPoint.top / 100) * ph;
+  const tx = (topCalPoint.left / 100) * pw;
+  const ty = (topCalPoint.top / 100) * ph;
+
+  // Extend through the bottom→top vector to the top edge of the parent (y=0).
+  // If the markers happen to be at the same height, we just connect them.
+  let x2 = tx, y2 = ty;
+  const dy = ty - by;
+  if (Math.abs(dy) > 0.01) {
+    const t = (0 - by) / dy;
+    x2 = bx + t * (tx - bx);
+    y2 = 0;
+  }
+
+  let svg = parent.querySelector(':scope > svg.' + CLONEABLE_SVG_CLASS);
+  if (!svg) {
+    svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.classList.add(CLONEABLE_SVG_CLASS);
+    Object.assign(svg.style, {
+      position: 'absolute',
+      top: '0', left: '0',
+      width: '100%', height: '100%',
+      pointerEvents: 'none',
+      overflow: 'visible',
+    });
+    svg.setAttribute('preserveAspectRatio', 'none');
+    parent.appendChild(svg);
+  }
+  // viewBox in parent's pixel units so coords below are direct.
+  svg.setAttribute('viewBox', `0 0 ${pw} ${ph}`);
+
+  let line = svg.querySelector('line');
+  if (!line) {
+    line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('stroke', '#ffdf00');        // Katapult-ish yellow
+    line.setAttribute('stroke-width', '2');
+    line.setAttribute('vector-effect', 'non-scaling-stroke');
+    svg.appendChild(line);
+  }
+  line.setAttribute('x1', bx);
+  line.setAttribute('y1', by);
+  line.setAttribute('x2', x2);
+  line.setAttribute('y2', y2);
+}
+
+function removeExtendedLineSvgs() {
+  deepQueryAll(document, 'svg.' + CLONEABLE_SVG_CLASS).forEach(s => s.remove());
+}
+
 function reassertStickLineStyle() {
   const ctx = stickLineLiveCtx;
-  if (!ctx || !ctx.parent || !ctx.stickLine.isConnected) return;
-  const ph = ctx.parent.offsetHeight;
-  if (!ph) return;
-  const pxNeeded = (ctx.topPct / 100) * ph;
-  // Temporarily stop observing so our own writes don't retrigger the observer.
-  if (stickLineMutationObserver) stickLineMutationObserver.disconnect();
-  ctx.stickLine.style.setProperty('width', pxNeeded + 'px', 'important');
-  ctx.stickLine.style.setProperty('top', ctx.topPct + '%', 'important');
-  ctx.stickLine.style.setProperty('left', ctx.leftPct + '%', 'important');
-  ctx.stickLine.style.setProperty('z-index', '99999', 'important');
-  if (ctx.angleDeg != null) {
-    ctx.stickLine.style.setProperty(
-      'transform',
-      `translateY(-50%) rotate(${ctx.angleDeg}deg)`,
-      'important'
-    );
-  }
-  if (stickLineMutationObserver) {
-    try { stickLineMutationObserver.observe(ctx.stickLine, { attributes: true, attributeFilter: ['style'] }); } catch (e) {}
-  }
+  if (!ctx || !ctx.parent || !ctx.parent.isConnected) return;
+  // Just redraw the SVG with the current parent dimensions — marker percentages
+  // are constant; pixel positions scale with zoom automatically.
+  drawExtendedLineSvg(ctx.parent, ctx.bottomCalPoint, ctx.topCalPoint);
 }
 
 function scheduleStickLineReassert() {
@@ -4944,8 +4990,8 @@ function scheduleStickLineReassert() {
   });
 }
 
-function attachStickLineLiveUpdater(stickLine, parent, topPct, leftPct, angleDeg) {
-  stickLineLiveCtx = { stickLine, parent, topPct, leftPct, angleDeg };
+function attachStickLineLiveUpdater(stickLine, parent, bottomCalPoint, topCalPoint) {
+  stickLineLiveCtx = { stickLine, parent, bottomCalPoint, topCalPoint };
 
   if (stickLineResizeObserver) stickLineResizeObserver.disconnect();
   if (typeof ResizeObserver === 'function') {
@@ -4953,6 +4999,10 @@ function attachStickLineLiveUpdater(stickLine, parent, topPct, leftPct, angleDeg
     try { stickLineResizeObserver.observe(parent); } catch (e) {}
   }
 
+  // Watch the .stickLine's style for changes — Katapult sometimes re-positions
+  // it during interactions, and that's also the moment when our shadow-root
+  // hide rule may need re-engaging (a fresh element). We don't actually copy
+  // values from .stickLine anymore; we just take it as a re-draw nudge.
   if (stickLineMutationObserver) stickLineMutationObserver.disconnect();
   stickLineMutationObserver = new MutationObserver(scheduleStickLineReassert);
   try {
@@ -4985,17 +5035,18 @@ function handleExtendStickLine(enabled) {
   }
 
   if (!enabled) {
-    // Restore original state
-    stickLine.style.cssText = originalStickLineState.cssText;
-    originalStickLineState.ancestorOverflows.forEach(({ element, overflow }) => {
-      element.style.overflow = overflow;
-    });
+    // Tear down: remove the SVG overlay, disconnect observers, drop the
+    // overflow overrides. Katapult's native .stickLine becomes visible again
+    // because the polling tick clears the body's data-cloneable-extend flag.
+    removeExtendedLineSvgs();
+    if (originalStickLineState) {
+      originalStickLineState.ancestorOverflows.forEach(({ element, overflow }) => {
+        element.style.overflow = overflow;
+      });
+    }
     if (stickLineResizeObserver) { stickLineResizeObserver.disconnect(); stickLineResizeObserver = null; }
     if (stickLineMutationObserver) { stickLineMutationObserver.disconnect(); stickLineMutationObserver = null; }
     stickLineLiveCtx = null;
-    // Remove the positioned marker; the body attr is cleared by the polling tick
-    // or by toggleStickLine in popup, so the hide-stylesheet won't fire either way.
-    stickLine.removeAttribute('data-cloneable-positioned');
     return { applied: true, message: 'Restored original line' };
   }
 
@@ -5051,69 +5102,23 @@ function handleExtendStickLine(enabled) {
     return { applied: false, message: 'Not a Cloneable measurement (max ' + Math.round(highestFeet) + '\')' };
   }
 
-  // Move stick line to bottom calibration point, extend to top of image
-  // The line is rotated ~90deg so CSS 'width' controls vertical extent.
-  // 'width' is % of parent width, but we need to span parent height.
-  // Use pixel value for precision: set width in px = bottomCalTop% * parentHeight
+  // New approach (v1.46+): instead of fighting Katapult's CSS rotation on
+  // .stickLine, hide the original line via the shadow-root stylesheet and
+  // overlay our own SVG line. The SVG draws from the bottom marker pixel
+  // position through the top marker pixel position, extended to the top of
+  // the image. Pure pixel-space geometry, no rotation math.
   const parent = stickLine.parentElement;
   const parentHeight = parent ? parent.offsetHeight : 0;
   const parentWidth = parent ? parent.offsetWidth : 0;
-
-  // Compute the line's actual angle from the marker positions, in degrees,
-  // matching the CSS rotation convention (a horizontal line rotated by this
-  // angle should land on the markers). Katapult's transform sometimes
-  // mis-signs the pole tilt, causing visible drift at the top of the line
-  // when extended — our best-fit angle through bottom → top calibration
-  // markers fixes that.
-  //
-  // CRITICAL: marker positions are stored as percentages of *different*
-  // parent dimensions (top% scales with parent.offsetHeight, left% with
-  // parent.offsetWidth). The rotation angle has to be computed in pixel
-  // space, not percentage space, otherwise the angle is wrong by the
-  // parent's aspect ratio — which is how v1.44 over-corrected and tilted
-  // the line in the opposite direction.
-  let stickLineAngleDeg = null;
-  if (calPoints.length >= 2 && parentWidth > 0 && parentHeight > 0) {
-    const dLeftPx = (topCalPoint.left - bottomCalPoint.left) * parentWidth / 100;
-    const dTopPx = (topCalPoint.top - bottomCalPoint.top) * parentHeight / 100;   // negative going up
-    if (Math.abs(dTopPx) > 1) {
-      // atan2(dTopPx, dLeftPx): angle from the +x axis to the vector
-      // pointing from the rotation origin (left end of horizontal line at
-      // bottom anchor) toward the top marker, in pixel space.
-      stickLineAngleDeg = Math.atan2(dTopPx, dLeftPx) * 180 / Math.PI;
-    }
+  if (!parent || !parentWidth || !parentHeight) {
+    return { applied: false, message: 'Photo viewer not laid out yet' };
   }
 
-  if (parentHeight > 0) {
-    const pxNeeded = (bottomCalPoint.top / 100) * parentHeight;
-    stickLine.style.setProperty('width', pxNeeded + 'px', 'important');
-  } else {
-    stickLine.style.setProperty('width', '2000px', 'important');
-  }
+  drawExtendedLineSvg(parent, bottomCalPoint, topCalPoint);
 
-  stickLine.style.setProperty('top', bottomCalPoint.top + '%', 'important');
-  stickLine.style.setProperty('left', bottomCalPoint.left + '%', 'important');
-  stickLine.style.setProperty('z-index', '99999', 'important');
-  if (stickLineAngleDeg != null) {
-    stickLine.style.setProperty(
-      'transform',
-      `translateY(-50%) rotate(${stickLineAngleDeg}deg)`,
-      'important'
-    );
-  }
-  // Mark this line as positioned. The hide-default stylesheet we inject into
-  // each photo-viewer's shadow root hides any .stickLine without this
-  // attribute, so when Katapult creates a fresh element on a pole switch the
-  // user never sees it at the default position.
-  stickLine.setAttribute('data-cloneable-positioned', '');
-  // Clear any prior visibility override (legacy from v1.41 — now the shadow-
-  // root stylesheet handles it, but defensive cleanup is cheap).
-  stickLine.style.removeProperty('visibility');
-
-  // Live-update the width while zoom / resize happens so the line doesn't
-  // visibly break between poll cycles. Also re-applies our computed angle so
-  // Katapult's own transform updates don't override ours.
-  if (parent) attachStickLineLiveUpdater(stickLine, parent, bottomCalPoint.top, bottomCalPoint.left, stickLineAngleDeg);
+  // Hand the markers + parent to the live updater so zoom / mutation
+  // observers can redraw the SVG with current pixel dimensions.
+  attachStickLineLiveUpdater(stickLine, parent, bottomCalPoint, topCalPoint);
 
   // Ensure parent containers don't clip the line
   let el = stickLine.parentElement;
@@ -5165,24 +5170,15 @@ async function autoApplyStickLine() {
 // Start auto-apply after a delay to let the page render
 setTimeout(autoApplyStickLine, 3000);
 
-// Toggle visibility of the existing stick-line without removing our position
-// overrides. Used to hide the line during a pole switch so the user never
-// sees it at the previous photo's coordinates while the new photo's
-// annotations are still rendering.
-function setStickLineHidden(stickLine, hidden) {
-  if (!stickLine) return;
-  if (hidden) stickLine.style.setProperty('visibility', 'hidden', 'important');
-  else stickLine.style.removeProperty('visibility');
-}
-
 // Re-apply when navigating between poles (hash change).
-// Hide the line immediately so the user never sees it stuck at the old pole's
-// anchor while the new photo's annotations are still loading. autoApplyStickLine
-// will restore visibility when it lands on the new photo's marker positions.
+// Drop the SVG so we don't briefly show it at the previous pole's anchor while
+// the new photo loads, then kick off the retry loop to redraw at the new
+// markers. The shadow-root stylesheet keeps Katapult's native .stickLine
+// hidden in the meantime.
 window.addEventListener('hashchange', () => {
-  const stickLines = deepQueryAll(document, '.stickLine');
-  if (stickLines.length) setStickLineHidden(stickLines[0], true);
+  removeExtendedLineSvgs();
   originalStickLineState = null;
+  stickLineLiveCtx = null;
   autoApplyStickLine();
   setTimeout(requestAutoCalibrate, 2500);
 });
@@ -5655,8 +5651,11 @@ setTimeout(() => window.postMessage({ type: 'cloneable-request-unstarred-count' 
 // stylesheet using :host-context() catches the fresh element by CSS rule,
 // no observer required.
 const CLONEABLE_HIDE_STYLE_ID = 'cloneable-hide-stickline';
+// Always hide Katapult's native .stickLine while extend mode is on. v1.46
+// replaced the rotation-based override with our own SVG overlay, so we don't
+// need a "positioned" marker anymore — the original line is just noise.
 const CLONEABLE_HIDE_STYLE_CSS = `
-:host-context(body[data-cloneable-extend="on"]) .stickLine:not([data-cloneable-positioned]) {
+:host-context(body[data-cloneable-extend="on"]) .stickLine {
   visibility: hidden !important;
 }
 `;
@@ -5696,72 +5695,56 @@ function findCurrentBottomCalibration() {
   return best;
 }
 
-// Periodically check if stick line needs re-applying (handles pole switches and zoom)
-// Shadow DOM mutations don't bubble to document.body, so polling is more reliable.
-let lastStickLineStyle = '';
-let lastParentHeight = 0;
-// Tolerance in % when comparing the stick line's current `top`/`left` to the
-// bottom calibration marker. Small jitter happens during layout settle; >0.5%
-// is a real divergence (typically a pole switch).
-const BOTTOM_CAL_DRIFT_TOLERANCE_PCT = 0.5;
+// Periodically reconcile the extend-mode state with the live DOM. Three jobs:
+//   1. Keep body[data-cloneable-extend] in sync with the toggle so the
+//      shadow-root stylesheets engage / disengage.
+//   2. Inject the hide-stylesheet into any newly-attached photo viewers.
+//   3. Redraw our SVG line whenever the bottom or top calibration marker has
+//      moved (pole switch, marker re-tagging) or the SVG is missing (fresh
+//      viewer). Comparison is in % space because the markers' percentages are
+//      stable across zoom.
+const MARKER_DRIFT_TOLERANCE_PCT = 0.2;
 setInterval(async () => {
   let extendStickLine;
   try {
     ({ extendStickLine } = await chrome.storage.local.get('extendStickLine'));
   } catch (e) { return; } // Extension context invalidated
-  // Keep the body flag and shadow-root stylesheets in sync with the toggle.
-  // Cheap idempotent ops — setAttribute is a no-op if the value is unchanged
-  // and injectHideStyleIntoViewers skips viewers that already have the style.
   if (extendStickLine === false) {
     document.body?.removeAttribute('data-cloneable-extend');
+    removeExtendedLineSvgs();
     return;
   }
   document.body?.setAttribute('data-cloneable-extend', 'on');
   injectHideStyleIntoViewers();
 
+  // Need at least a .stickLine present so we know the photo viewer is laid
+  // out with a height-calibration photo open. Its parent is also the right
+  // place to anchor our SVG.
   const stickLines = deepQueryAll(document, '.stickLine');
   if (stickLines.length === 0) return;
-
   const stickLine = stickLines[0];
-  const currentStyle = stickLine.style.cssText;
-  const parentHeight = stickLine.parentElement ? stickLine.parentElement.offsetHeight : 0;
-  const hasOurOverride = !!stickLine.style.getPropertyPriority('top');
 
-  // Trigger 1 — Katapult re-rendered the stick line (our override is gone).
-  const styleChanged = currentStyle !== lastStickLineStyle && !hasOurOverride;
-  // Trigger 2 — parent resized while our override is in place (zoom).
-  const parentResized = parentHeight !== lastParentHeight && lastParentHeight > 0 && hasOurOverride;
-  // Trigger 3 — annotations moved to new positions but our style is still set
-  // (typical "switch poles" case: same viewer, same dimensions, new markers).
-  let bottomMoved = false;
-  if (hasOurOverride) {
-    const cur = findCurrentBottomCalibration();
-    if (cur) {
-      const appliedTop = parseFloat(stickLine.style.top);
-      const appliedLeft = parseFloat(stickLine.style.left);
-      if (!isNaN(appliedTop) && !isNaN(appliedLeft) && (
-        Math.abs(cur.top - appliedTop) > BOTTOM_CAL_DRIFT_TOLERANCE_PCT ||
-        Math.abs(cur.left - appliedLeft) > BOTTOM_CAL_DRIFT_TOLERANCE_PCT
-      )) {
-        bottomMoved = true;
-      }
+  // Compare current markers to what our last apply used. If they've drifted
+  // (or there was no last apply yet), call handleExtendStickLine to redraw.
+  const liveBottom = findCurrentBottomCalibration();
+  const ctx = stickLineLiveCtx;
+  let needsRedraw = !ctx || !ctx.parent?.isConnected;
+  if (!needsRedraw && liveBottom && ctx.bottomCalPoint) {
+    if (Math.abs(liveBottom.top - ctx.bottomCalPoint.top) > MARKER_DRIFT_TOLERANCE_PCT ||
+        Math.abs(liveBottom.left - ctx.bottomCalPoint.left) > MARKER_DRIFT_TOLERANCE_PCT) {
+      needsRedraw = true;
     }
   }
-
-  if (styleChanged || parentResized || bottomMoved) {
-    // Hide BEFORE re-applying so a misaligned frame never reaches the
-    // compositor. handleExtendStickLine restores visibility when it lands the
-    // new positions (both writes happen in the same JS task, so the browser
-    // typically only paints the final state).
-    if (bottomMoved) setStickLineHidden(stickLine, true);
-    originalStickLineState = null;
-    const result = handleExtendStickLine(true);
-    if (result.applied) {
-      lastStickLineStyle = stickLines[0].style.cssText;
-      lastParentHeight = parentHeight;
+  // Also redraw if our SVG was somehow removed (Katapult re-renders, etc.)
+  if (!needsRedraw) {
+    const parent = stickLine.parentElement;
+    if (parent && !parent.querySelector(':scope > svg.' + CLONEABLE_SVG_CLASS)) {
+      needsRedraw = true;
     }
-  } else if (lastParentHeight === 0 && parentHeight > 0) {
-    lastParentHeight = parentHeight;
+  }
+  if (needsRedraw) {
+    originalStickLineState = null;
+    handleExtendStickLine(true);
   }
 }, 1500);
 
