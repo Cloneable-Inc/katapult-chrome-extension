@@ -159,6 +159,47 @@ chrome.runtime.onStartup.addListener(async () => {
 // Also initialize immediately when service worker loads
 initializeCustomDomains();
 
+/**
+ * Convert a host-permission origin pattern (e.g. "https://maps.tepgroup.net/*")
+ * into a bare domain ("maps.tepgroup.net"). Returns null for patterns we don't
+ * want to auto-register (broad wildcards, non-https, unparseable).
+ */
+function originPatternToDomain(origin) {
+  const match = /^https:\/\/([^/*]+)\/\*?$/.exec(origin);
+  if (!match) return null;
+  return match[1];
+}
+
+// Finalize custom-domain adds in the background. Calling
+// chrome.permissions.request() from the action popup tears down the popup's JS
+// context, so the storage write + content-script registration that used to live
+// after the await in popup.js never ran. Doing it here makes it reliable even
+// when the popup closes the instant the permission prompt appears.
+chrome.permissions.onAdded.addListener(async (permissions) => {
+  const origins = (permissions && permissions.origins) || [];
+  for (const origin of origins) {
+    const domain = originPatternToDomain(origin);
+    if (!domain) continue;
+    const result = await addDomain(domain);
+    await registerContentScriptsForDomain(domain);
+    console.log(`permissions.onAdded → finalized custom domain ${domain}`, result);
+  }
+});
+
+// Mirror removals: when a host permission is revoked, drop the domain from
+// storage and unregister its content scripts. Idempotent with the popup's own
+// remove flow.
+chrome.permissions.onRemoved.addListener(async (permissions) => {
+  const origins = (permissions && permissions.origins) || [];
+  for (const origin of origins) {
+    const domain = originPatternToDomain(origin);
+    if (!domain) continue;
+    await removeDomain(domain);
+    await unregisterContentScriptsForDomain(domain);
+    console.log(`permissions.onRemoved → removed custom domain ${domain}`);
+  }
+});
+
 // Listen for web requests to catch model data
 // Note: webRequest filters are static, but we'll still log all activity
 chrome.webRequest.onCompleted.addListener(

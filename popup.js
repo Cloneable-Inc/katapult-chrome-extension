@@ -198,18 +198,38 @@ function handleShowUnstarred() {
   });
 }
 
-// Check if model data has been captured
-function checkDataStatus() {
+// Check if model data has been captured. The page reconstructs the model on
+// timers (up to ~10s after load — see inject.js performReconstructionFinalization),
+// so poll for a bit before showing the warning instead of flashing it the
+// instant the popup opens (which made it look like capture had failed).
+function checkDataStatus(attempt = 0) {
   if (!currentTab) return;
+  const MAX_ATTEMPTS = 12;   // ~12s total at 1s intervals
+  const RETRY_MS = 1000;
+  const warning = document.getElementById('data-warning');
+  const exportBtn = document.getElementById('export-full-model-btn');
+
   chrome.tabs.sendMessage(currentTab.id, { type: 'CHECK_DATA_STATUS' }, (response) => {
-    if (chrome.runtime.lastError || !response) return;
-    const warning = document.getElementById('data-warning');
-    const exportBtn = document.getElementById('export-full-model-btn');
-    if (!response.hasData) {
-      warning.style.display = '';
-      exportBtn.disabled = true;
-    } else {
+    // Content script not answering yet — retry within the window.
+    if (chrome.runtime.lastError || !response) {
+      if (attempt < MAX_ATTEMPTS) setTimeout(() => checkDataStatus(attempt + 1), RETRY_MS);
+      return;
+    }
+
+    if (response.hasData) {
       warning.style.display = 'none';
+      exportBtn.disabled = false;
+      return;
+    }
+
+    // No model data yet. Keep export disabled and keep polling silently; only
+    // surface the warning once reconstruction has had enough time to finish.
+    exportBtn.disabled = true;
+    if (attempt < MAX_ATTEMPTS) {
+      warning.style.display = 'none';
+      setTimeout(() => checkDataStatus(attempt + 1), RETRY_MS);
+    } else {
+      warning.style.display = '';
     }
   });
 }
@@ -302,29 +322,23 @@ async function updateStatus() {
       setHeaderState('Page refreshed — reopen to export', false);
     }
 
-    // Check if it's a model editor page
-    const isModelEditor = isModelEditorUrl(currentTab.url);
-    if (isModelEditor) {
-      addDomainBtn.disabled = true;
-      addDomainBtn.textContent = 'Already added';
-    } else {
-      addDomainBtn.disabled = true;
-      addDomainBtn.textContent = 'Not on Katapult';
-    }
+    // Already on an allowed domain — nothing to add
+    addDomainBtn.disabled = true;
+    addDomainBtn.textContent = 'Already added';
   } else {
     setHeaderState(`Inactive on ${domain}`, false);
     if (thisJobBlock) thisJobBlock.style.display = 'none';
     exportFullModelBtn.disabled = true;
     downloadJsonBtn.disabled = true;
 
-    // Check if current page could be added
-    const isModelEditor = isModelEditorUrl(currentTab.url);
-    if (isModelEditor) {
+    // Allow adding any https domain (Katapult custom domains live on their
+    // own hostnames and aren't always opened on a /model-editor/ URL first).
+    if (domain && currentTab.url.startsWith('https://')) {
       addDomainBtn.disabled = false;
-      addDomainBtn.textContent = 'Add current domain';
+      addDomainBtn.textContent = `Add ${domain}`;
     } else {
       addDomainBtn.disabled = true;
-      addDomainBtn.textContent = 'Not on Katapult';
+      addDomainBtn.textContent = 'No domain to add';
     }
   }
 }
@@ -426,9 +440,9 @@ async function handleAddDomain() {
     return;
   }
 
-  // Check if it's a model editor URL
-  if (!isModelEditorUrl(currentTab.url)) {
-    showFeedback(addDomainBtn, 'Not on Model Editor', '#f44336');
+  // Only https origins can be granted host permissions / content scripts
+  if (!currentTab.url.startsWith('https://')) {
+    showFeedback(addDomainBtn, 'Not an https page', '#f44336');
     return;
   }
 
