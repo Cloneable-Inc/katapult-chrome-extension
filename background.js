@@ -160,8 +160,8 @@ chrome.runtime.onStartup.addListener(async () => {
 initializeCustomDomains();
 
 /**
- * Convert a host-permission origin pattern (e.g. "https://maps.tepgroup.net/*")
- * into a bare domain ("maps.tepgroup.net"). Returns null for patterns we don't
+ * Convert a host-permission origin pattern (e.g. "https://maps.example.com/*")
+ * into a bare domain ("maps.example.com"). Returns null for patterns we don't
  * want to auto-register (broad wildcards, non-https, unparseable).
  */
 function originPatternToDomain(origin) {
