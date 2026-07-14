@@ -1275,22 +1275,28 @@ async function refineEligibility(snapshot) {
   if (!snapshot || !snapshot.jobId) return snapshot;
   const jobId = snapshot.jobId;
 
+  // Check every photo of an item in parallel. A serial short-circuit loop
+  // looks cheaper, but each uncached read can take up to the fbReadOnce 8s
+  // fallback, so serial photo checks stack timeouts on large jobs. All reads
+  // land in __photoEligibilityCache, and autoStarUnstarredNodes needs every
+  // photo's height anyway to pick the best candidate — nothing is wasted.
+  const anyPhotoEligible = async (photos) => {
+    const results = await Promise.all(
+      Object.keys(photos).map(pid => photoMeetsHeightThreshold(jobId, pid))
+    );
+    return results.some(Boolean);
+  };
+
   const nodeChecks = (snapshot.samples || []).map(async s => {
     const node = snapshot.unstarredNodes?.[s.nodeId];
     if (!node?.photos) return { sample: s, eligible: false };
-    for (const pid of Object.keys(node.photos)) {
-      if (await photoMeetsHeightThreshold(jobId, pid)) return { sample: s, eligible: true };
-    }
-    return { sample: s, eligible: false };
+    return { sample: s, eligible: await anyPhotoEligible(node.photos) };
   });
 
   const sectionChecks = (snapshot.connSamples || []).map(async c => {
     const section = snapshot.unstarredConnections?.[c.connectionId]?.sections?.[c.sectionId];
     if (!section?.photos) return { sample: c, eligible: false };
-    for (const pid of Object.keys(section.photos)) {
-      if (await photoMeetsHeightThreshold(jobId, pid)) return { sample: c, eligible: true };
-    }
-    return { sample: c, eligible: false };
+    return { sample: c, eligible: await anyPhotoEligible(section.photos) };
   });
 
   const [nodeResults, sectionResults] = await Promise.all([
@@ -1429,7 +1435,14 @@ function installStarHooks() {
 // (We deliberately don't use Katapult's higher-level starPhotosInAssociation —
 // it internally gates on the photofirst_data.poleHeight type flag, which isn't
 // reliably set on older Cloneable imports.)
-async function autoStarUnstarredNodes() {
+async function autoStarUnstarredNodes(onProgress) {
+  // Progress heartbeats let content.js distinguish "still working" from
+  // "hung" — its timeout is inactivity-based, so long jobs no longer trip a
+  // fixed 30s guard while writes are still landing.
+  const progress = (phase, done, total) => {
+    if (typeof onProgress !== 'function') return;
+    try { onProgress({ phase, done, total }); } catch (e) {}
+  };
   const map = findMapsDesktop();
   if (!map || typeof map.updateMainPhotoWithAssociation !== 'function') {
     return { applied: false, message: 'KATAPULT-MAPS-DESKTOP not ready' };
@@ -1438,6 +1451,7 @@ async function autoStarUnstarredNodes() {
   if (!snapshot) {
     const initial = computeUnstarredNodes();
     if (!initial) return { applied: false, message: 'No node data' };
+    progress('checking');
     snapshot = await refineEligibility(initial);
     __cloneableLastRefined = snapshot;
   }
@@ -1449,63 +1463,83 @@ async function autoStarUnstarredNodes() {
   }
 
   // For both nodes and sections, pick the photo with the highest
-  // anchor_calibration max above the Cloneable threshold.
-  let nodeStarred = 0;
-  let connStarred = 0;
-  const errors = [];
-
-  for (const nodeId of nodeIds) {
-    const node = unstarredNodes[nodeId];
-    const candidates = [];
-    for (const pid of Object.keys(node.photos || {})) {
-      const max = await getPhotoMaxAnchorHeight(jobId, pid);
-      if (max != null && max > CLONEABLE_HEIGHT_THRESHOLD_FT) candidates.push({ pid, max });
-    }
-    if (!candidates.length) continue;
-    candidates.sort((a, b) => b.max - a.max);
-    try {
-      await map.updateMainPhotoWithAssociation(candidates[0].pid, nodeId, null, null);
-      nodeStarred++;
-    } catch (e) {
-      errors.push({ nodeId, message: e?.message || String(e) });
-    }
-  }
+  // anchor_calibration max above the Cloneable threshold. Resolve all photo
+  // heights in parallel up front — most are already cached from the badge
+  // recount, and the ones that aren't would otherwise serialize their 8s
+  // fbReadOnce fallbacks.
+  progress('checking');
+  const bestCandidate = async (photos) => {
+    const pids = Object.keys(photos || {});
+    const maxes = await Promise.all(pids.map(pid => getPhotoMaxAnchorHeight(jobId, pid)));
+    let best = null;
+    pids.forEach((pid, i) => {
+      const max = maxes[i];
+      if (max == null || max <= CLONEABLE_HEIGHT_THRESHOLD_FT) return;
+      if (!best || max > best.max) best = { pid, max };
+    });
+    return best;
+  };
 
   // Star every eligible unstarred section in every connection (one main photo
   // per section). Previous versions used a `break` after the first successful
   // section per connection — that left other unstarred sections in the same
   // connection still missing a main photo.
+  const sectionEntries = [];
   for (const cid of connIds) {
-    const conn = unstarredConnections[cid];
-    for (const [sid, section] of Object.entries(conn.sections || {})) {
-      // Same selection rule as poles: pick the section photo with the highest
-      // anchor_calibration measurement above the threshold.
-      const candidates = [];
-      for (const pid of Object.keys(section.photos || {})) {
-        const max = await getPhotoMaxAnchorHeight(jobId, pid);
-        if (max != null && max > CLONEABLE_HEIGHT_THRESHOLD_FT) candidates.push({ pid, max });
-      }
-      if (!candidates.length) continue;
-      candidates.sort((a, b) => b.max - a.max);
-      try {
-        await map.updateMainPhotoWithAssociation(candidates[0].pid, null, cid, sid);
-        connStarred++;
-      } catch (e) {
-        errors.push({ connectionId: cid, sectionId: sid, message: e?.message || String(e) });
-      }
+    for (const [sid, section] of Object.entries(unstarredConnections[cid].sections || {})) {
+      sectionEntries.push({ cid, sid, photos: section.photos });
     }
+  }
+
+  const [nodeTargets, sectionTargets] = await Promise.all([
+    Promise.all(nodeIds.map(async nodeId => ({
+      nodeId, best: await bestCandidate(unstarredNodes[nodeId].photos),
+    }))),
+    Promise.all(sectionEntries.map(async s => ({
+      ...s, best: await bestCandidate(s.photos),
+    }))),
+  ]).then(([n, s]) => [n.filter(t => t.best), s.filter(t => t.best)]);
+
+  // Writes stay sequential: updateMainPhotoWithAssociation mutates Katapult's
+  // in-memory state and issues Firebase writes, and we don't know it to be
+  // reentrant. Each completed write emits a progress heartbeat instead.
+  let nodeStarred = 0;
+  let connStarred = 0;
+  const errors = [];
+  const total = nodeTargets.length + sectionTargets.length;
+  let done = 0;
+  progress('starring', done, total);
+
+  for (const t of nodeTargets) {
+    try {
+      await map.updateMainPhotoWithAssociation(t.best.pid, t.nodeId, null, null);
+      nodeStarred++;
+    } catch (e) {
+      errors.push({ nodeId: t.nodeId, message: e?.message || String(e) });
+    }
+    progress('starring', ++done, total);
+  }
+
+  for (const t of sectionTargets) {
+    try {
+      await map.updateMainPhotoWithAssociation(t.best.pid, null, t.cid, t.sid);
+      connStarred++;
+    } catch (e) {
+      errors.push({ connectionId: t.cid, sectionId: t.sid, message: e?.message || String(e) });
+    }
+    progress('starring', ++done, total);
   }
 
   setTimeout(() => scheduleUnstarredRecount('post-auto-star'), 1500);
 
-  const total = nodeStarred + connStarred;
+  const starred = nodeStarred + connStarred;
   return {
-    applied: total > 0,
-    count: total,
+    applied: starred > 0,
+    count: starred,
     nodeCount: nodeStarred,
     connCount: connStarred,
     errors: errors.length ? errors : undefined,
-    message: total > 0
+    message: starred > 0
       ? `Auto-starred ${nodeStarred} node${nodeStarred === 1 ? '' : 's'}${connStarred ? ` and ${connStarred} section${connStarred === 1 ? '' : 's'}` : ''}`
       : 'No eligible photos found',
   };
@@ -1589,7 +1623,16 @@ window.addEventListener('message', function(event) {
     scheduleUnstarredRecount('request');
   } else if (event.data && event.data.type === 'cloneable-auto-star') {
     const requestId = event.data.requestId;
-    autoStarUnstarredNodes().then(result => {
+    const postProgress = (p) => {
+      window.postMessage({
+        type: 'cloneable-auto-star-progress',
+        requestId,
+        phase: p.phase,
+        done: p.done,
+        total: p.total,
+      }, '*');
+    };
+    autoStarUnstarredNodes(postProgress).then(result => {
       window.postMessage({
         type: 'cloneable-auto-star-result',
         requestId,

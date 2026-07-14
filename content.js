@@ -5227,6 +5227,7 @@ let unstarredBadgeState = {
   connSamples: [],    // [{ kind:'section', connectionId, sectionId, photoCount }]
   loading: false,
   busy: false,        // true while auto-star is in flight
+  busyProgress: null, // { phase: 'checking'|'starring', done, total } from inject.js
   enabled: true,      // mirrors chrome.storage.local.showUnstarredBadge
   expanded: false,    // expandable list of missing-photo nodes/sections
   feedback: null,     // { kind: 'success'|'error', message: string, sticky: boolean }
@@ -5481,7 +5482,14 @@ function renderUnstarredBadge() {
     return;
   }
   if (s.busy) {
-    el.innerHTML = `${brand}<div style="opacity:0.95;display:flex;align-items:center;gap:8px;"><span class="cloneable-spinner"></span><span>Starring height photos…</span></div>`;
+    const p = s.busyProgress;
+    let busyLabel = 'Starring height photos…';
+    if (p?.phase === 'checking') {
+      busyLabel = 'Checking photo heights…';
+    } else if (p?.phase === 'starring' && p.total > 0) {
+      busyLabel = `Starring height photos… ${p.done}/${p.total}`;
+    }
+    el.innerHTML = `${brand}<div style="opacity:0.95;display:flex;align-items:center;gap:8px;"><span class="cloneable-spinner"></span><span>${escapeHtml(busyLabel)}</span></div>`;
     return;
   }
   // Feedback-only view: success after the count drops to zero, or a sticky error.
@@ -5539,20 +5547,49 @@ function renderFeedbackBanner(fb) {
   `;
 }
 
+// Give up only after this long with NO signal from inject.js (neither a
+// progress heartbeat nor the final result). inject.js emits progress after
+// every star write and its per-photo Firebase reads fall back after 8s, so a
+// healthy run — however large the job — never goes quiet this long.
+const AUTO_STAR_INACTIVITY_TIMEOUT_MS = 30000;
+
 function handleAutoStarClick() {
   if (unstarredBadgeState.busy) return;
   // Clear any prior feedback (e.g. lingering success from previous job).
   clearTimeout(unstarredFeedbackTimer);
   unstarredBadgeState.feedback = null;
   unstarredBadgeState.busy = true;
+  unstarredBadgeState.busyProgress = null;
   renderUnstarredBadge();
   const requestId = Date.now();
   let settled = false;
+  let lastActivityAt = Date.now();
+  let watchdog = null;
+  const cleanup = () => {
+    settled = true;
+    clearInterval(watchdog);
+    window.removeEventListener('message', handler);
+    window.removeEventListener('message', progressHandler);
+    unstarredBadgeState.busyProgress = null;
+  };
+  const progressHandler = (event) => {
+    if (!event.data || event.data.type !== 'cloneable-auto-star-progress') return;
+    if (event.data.requestId !== requestId) return;
+    lastActivityAt = Date.now();
+    // Coerce to safe primitives — any window can postMessage.
+    const done = Number(event.data.done);
+    const total = Number(event.data.total);
+    unstarredBadgeState.busyProgress = {
+      phase: event.data.phase === 'checking' ? 'checking' : 'starring',
+      done: Number.isFinite(done) && done >= 0 ? done : 0,
+      total: Number.isFinite(total) && total >= 0 ? total : 0,
+    };
+    renderUnstarredBadge();
+  };
   const handler = (event) => {
     if (!event.data || event.data.type !== 'cloneable-auto-star-result') return;
     if (event.data.requestId !== requestId) return;
-    settled = true;
-    window.removeEventListener('message', handler);
+    cleanup();
     unstarredBadgeState.busy = false;
     const r = event.data.result || {};
     if (r.applied) {
@@ -5573,16 +5610,20 @@ function handleAutoStarClick() {
     }
   };
   window.addEventListener('message', handler);
+  window.addEventListener('message', progressHandler);
   window.postMessage({ type: 'cloneable-auto-star', requestId }, '*');
-  // Safety release if inject.js never responds (extension context broken, etc.)
-  setTimeout(() => {
+  // Inactivity watchdog: a fixed overall deadline mislabeled long-but-healthy
+  // runs as "Timed out" while stars were still landing (CLO-2096). Only bail
+  // when inject.js has gone completely silent.
+  watchdog = setInterval(() => {
     if (settled) return;
-    window.removeEventListener('message', handler);
+    if (Date.now() - lastActivityAt < AUTO_STAR_INACTIVITY_TIMEOUT_MS) return;
+    cleanup();
     if (unstarredBadgeState.busy) {
       unstarredBadgeState.busy = false;
       setBadgeFeedback('error', 'Timed out — try again', { sticky: true });
     }
-  }, 30000);
+  }, 5000);
 }
 
 // Receive instant photo-change notification from inject.js's prototype patch
