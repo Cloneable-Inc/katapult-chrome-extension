@@ -413,15 +413,18 @@
   </button>
   <div class="primary-hint">All types, attributes, annotations &amp; classifications</div>
 
+  <!-- CUSTOM DOMAINS -->
+  <div class="section-heading">Custom Domains</div>
+  <button class="add-domain-btn" id="add-domain-btn">Add current domain</button>
+  <div class="primary-hint">Add Katapult custom domains (e.g. maps.tepgroup.net)</div>
+  <div class="domain-list" id="domain-list">
+    <!-- populated by domain-manager.js / popup.js -->
+  </div>
+
   <!-- SETTINGS (collapsed by default) -->
   <details class="settings">
     <summary>Settings</summary>
     <div class="settings-body">
-      <button class="add-domain-btn" id="add-domain-btn">Add current domain</button>
-      <div class="domain-list" id="domain-list">
-        <!-- populated by domain-manager.js / popup.js -->
-      </div>
-
       <!-- Environment toggle (hidden by default; triple-click on header title reveals) -->
       <div class="env-section" id="env-section" style="display: none;">
         <div class="env-row">
