@@ -5575,15 +5575,17 @@ function handleAutoStarClick() {
   const progressHandler = (event) => {
     if (!event.data || event.data.type !== 'cloneable-auto-star-progress') return;
     if (event.data.requestId !== requestId) return;
+    // Validate the payload BEFORE recording activity — any window can
+    // postMessage, and a malformed or spoofed message must not keep the
+    // inactivity watchdog alive. done/total are absent on 'checking'
+    // heartbeats, so treat undefined as 0 but reject anything non-numeric.
+    const { phase } = event.data;
+    if (phase !== 'checking' && phase !== 'starring') return;
+    const done = event.data.done === undefined ? 0 : Number(event.data.done);
+    const total = event.data.total === undefined ? 0 : Number(event.data.total);
+    if (!Number.isFinite(done) || done < 0 || !Number.isFinite(total) || total < 0) return;
     lastActivityAt = Date.now();
-    // Coerce to safe primitives — any window can postMessage.
-    const done = Number(event.data.done);
-    const total = Number(event.data.total);
-    unstarredBadgeState.busyProgress = {
-      phase: event.data.phase === 'checking' ? 'checking' : 'starring',
-      done: Number.isFinite(done) && done >= 0 ? done : 0,
-      total: Number.isFinite(total) && total >= 0 ? total : 0,
-    };
+    unstarredBadgeState.busyProgress = { phase, done, total };
     renderUnstarredBadge();
   };
   const handler = (event) => {
