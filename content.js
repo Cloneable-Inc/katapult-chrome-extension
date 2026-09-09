@@ -1,3 +1,24 @@
+// Katapult's window message listener JSON-parses every payload. Keep our
+// cross-world messages JSON strings so its listener can safely ignore them.
+function postCloneableMessage(message, targetOrigin = '*') {
+  window.postMessage(JSON.stringify(message), targetOrigin);
+}
+
+function readCloneableMessage(event) {
+  if (event.source !== window) return null;
+  let message = event.data;
+  if (typeof message === 'string') {
+    try {
+      message = JSON.parse(message);
+    } catch {
+      return null;
+    }
+  }
+  // Accept object payloads as well for compatibility with existing callers.
+  return message && typeof message.type === 'string' &&
+    message.type.startsWith('cloneable-') ? message : null;
+}
+
 
 
 
@@ -98,7 +119,7 @@ class ImportInterface {
 
     
     // Request fresh data from WebSocket interceptor
-    window.postMessage({ type: 'cloneable-get-model-attributes' }, '*');
+    postCloneableMessage({ type: 'cloneable-get-model-attributes' }, '*');
     
     // Give inject.js time to process the data, then parse
     setTimeout(() => {
@@ -128,7 +149,7 @@ class ImportInterface {
         }
         
         // Send message to inject script to trigger reconstruction immediately
-        window.postMessage({
+        postCloneableMessage({
           type: 'cloneable-trigger-reconstruction'
         }, '*');
         
@@ -4086,16 +4107,17 @@ class ImportInterface {
     
     // Set up a temporary listener for the response
     const handleWebSocketResponse = (event) => {
-      if (event.data && event.data.type === 'cloneable-websocket-data-response') {
+      const payload = readCloneableMessage(event);
+      if (payload && payload.type === 'cloneable-websocket-data-response') {
         window.removeEventListener('message', handleWebSocketResponse);
-        this.processFirebaseWebSocketData(event.data.messages);
+        this.processFirebaseWebSocketData(payload.messages);
       }
     };
     
     window.addEventListener('message', handleWebSocketResponse);
     
     // Request the data
-    window.postMessage({ type: 'cloneable-get-websocket-data-dump' }, '*');
+    postCloneableMessage({ type: 'cloneable-get-websocket-data-dump' }, '*');
     
     // Fallback: try direct access as well
     setTimeout(() => {
@@ -4637,30 +4659,31 @@ let buttonCreatedTime = null;
 
 // Add message listener to receive data from injected script
 window.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'cloneable-websocket-update') {
+  const payload = readCloneableMessage(event);
+  if (payload && payload.type === 'cloneable-websocket-update') {
 
-    captureStatus = event.data;
+    captureStatus = payload;
     updateButtonStatus();
   }
   
-  if (event.data && event.data.type === 'cloneable-websocket-data') {
+  if (payload && payload.type === 'cloneable-websocket-data') {
     captureStatus = {
-      messageCount: event.data.messages.length,
-      socketCount: event.data.socketCount
+      messageCount: payload.messages.length,
+      socketCount: payload.socketCount
     };
     updateButtonStatus();
   }
   
-  if (event.data && event.data.type === 'cloneable-model-attributes') {
+  if (payload && payload.type === 'cloneable-model-attributes') {
 
     
     // Check for directly provided node types from reconstruction
-    if (event.data.nodeTypes && event.data.nodeTypes.length > 0) {
+    if (payload.nodeTypes && payload.nodeTypes.length > 0) {
 
       
       // Store in both old and new locations for compatibility
-      window.cloneableNodeTypes = event.data.nodeTypes;
-      window.katapultProcessedNodeTypes = event.data.nodeTypes;
+      window.cloneableNodeTypes = payload.nodeTypes;
+      window.katapultProcessedNodeTypes = payload.nodeTypes;
       
 
       
@@ -4675,57 +4698,57 @@ window.addEventListener('message', (event) => {
   }
   
   // Listen for data update notifications from inject script
-  if (event.data && event.data.type === 'cloneable-data-updated') {
+  if (payload && payload.type === 'cloneable-data-updated') {
 
     // Store the received data in content script context
-    window.contentScriptNodeTypes = event.data.nodeTypes || [];
-    window.contentScriptConnectionTypes = event.data.connectionTypes || [];
-    window.contentScriptAttributes = event.data.attributes || {};
-    window.contentScriptModelData = event.data.modelData || {};
-    window.contentScriptImageClassifications = event.data.imageClassifications || [];
-    window.contentScriptNestedStructures = event.data.nestedAttributeStructures || {};
+    window.contentScriptNodeTypes = payload.nodeTypes || [];
+    window.contentScriptConnectionTypes = payload.connectionTypes || [];
+    window.contentScriptAttributes = payload.attributes || {};
+    window.contentScriptModelData = payload.modelData || {};
+    window.contentScriptImageClassifications = payload.imageClassifications || [];
+    window.contentScriptNestedStructures = payload.nestedAttributeStructures || {};
 
     // Store pole annotation data (passed from page context)
-    window.contentScriptPoleAnnotationTypes = event.data.poleAnnotationTypes || [];
-    window.contentScriptInputModelGroups = event.data.inputModelGroups || null;
-    window.contentScriptTraceModels = event.data.traceModels || null;
-    window.contentScriptSelectedModelKey = event.data.selectedModelKey || null;
-    window.contentScriptActiveCatalog = event.data.activeCatalog || null;
+    window.contentScriptPoleAnnotationTypes = payload.poleAnnotationTypes || [];
+    window.contentScriptInputModelGroups = payload.inputModelGroups || null;
+    window.contentScriptTraceModels = payload.traceModels || null;
+    window.contentScriptSelectedModelKey = payload.selectedModelKey || null;
+    window.contentScriptActiveCatalog = payload.activeCatalog || null;
 
     // Store processed attributes in content script context (in case importInterface doesn't exist yet)
-    window.contentScriptProcessedAttributes = event.data.processedAttributes || { withPicklists: [], withoutPicklists: [] };
+    window.contentScriptProcessedAttributes = payload.processedAttributes || { withPicklists: [], withoutPicklists: [] };
 
     // Also store in the location that updateButtonStatus checks
-    if (event.data.nodeTypes && event.data.nodeTypes.length > 0) {
-      window.cloneableNodeTypes = event.data.nodeTypes;
+    if (payload.nodeTypes && payload.nodeTypes.length > 0) {
+      window.cloneableNodeTypes = payload.nodeTypes;
     }
     
 
 
     
     // Store nested structures in importInterface
-    if (window.importInterface && event.data.nestedAttributeStructures) {
-      window.importInterface.nestedAttributeStructures = event.data.nestedAttributeStructures;
+    if (window.importInterface && payload.nestedAttributeStructures) {
+      window.importInterface.nestedAttributeStructures = payload.nestedAttributeStructures;
     }
 
     // Use processed attributes if available, otherwise process raw attributes
-    if (window.importInterface && event.data.processedAttributes) {
+    if (window.importInterface && payload.processedAttributes) {
 
       // Directly use the processed attributes instead of processing raw data
-      window.importInterface.availableAttributes.withPicklists = event.data.processedAttributes.withPicklists || [];
-      window.importInterface.availableAttributes.withoutPicklists = event.data.processedAttributes.withoutPicklists || [];
+      window.importInterface.availableAttributes.withPicklists = payload.processedAttributes.withPicklists || [];
+      window.importInterface.availableAttributes.withoutPicklists = payload.processedAttributes.withoutPicklists || [];
 
       // Ensure no duplicates from processed data
       window.importInterface.deduplicateAttributes();
 
 
-    } else if (window.importInterface && Object.keys(event.data.attributes || {}).length > 0) {
+    } else if (window.importInterface && Object.keys(payload.attributes || {}).length > 0) {
 
-      window.importInterface.processAttributeDefinitions(event.data.attributes);
+      window.importInterface.processAttributeDefinitions(payload.attributes);
     }
     
     // Reload image classifications if available
-    if (window.importInterface && event.data.imageClassifications && event.data.imageClassifications.length > 0) {
+    if (window.importInterface && payload.imageClassifications && payload.imageClassifications.length > 0) {
 
       window.importInterface.loadPhotoClassifications();
 
@@ -4742,7 +4765,7 @@ window.addEventListener('message', (event) => {
     }
 
     // Reload pole annotation definitions when data is received
-    if (window.importInterface && event.data.poleAnnotationTypes && event.data.poleAnnotationTypes.length > 0) {
+    if (window.importInterface && payload.poleAnnotationTypes && payload.poleAnnotationTypes.length > 0) {
       window.importInterface.loadPoleAnnotationDefinitions();
     }
     
@@ -4841,7 +4864,7 @@ function checkCaptureStatus() {
   }
   
   // Request status update from injected script
-  window.postMessage({ type: 'cloneable-get-websocket-data' }, '*');
+  postCloneableMessage({ type: 'cloneable-get-websocket-data' }, '*');
 }
 
 // Start checking capture status
@@ -4883,7 +4906,7 @@ window.debugNodeTypes = function() {
   
   // Try to trigger data loading
 
-  window.postMessage({ type: 'cloneable-get-model-attributes' }, '*');
+  postCloneableMessage({ type: 'cloneable-get-model-attributes' }, '*');
 };
 
 // Deep shadow DOM query helper
@@ -5194,7 +5217,7 @@ function requestAutoCalibrate() {
     chrome.storage.local.get(['autoCalibrate', 'autoConfirmDoItAnyway'], (result) => {
       if (chrome.runtime.lastError) return;
       if (result.autoCalibrate === false) return;
-      window.postMessage({
+      postCloneableMessage({
         type: 'cloneable-auto-calibrate',
         requestId: Date.now(),
         autoConfirm: result.autoConfirmDoItAnyway !== false
@@ -5332,13 +5355,13 @@ function ensureBadgeElement() {
 // gets feedback that the click registered.
 function selectUnstarredNode(nodeId) {
   const requestId = Date.now();
-  window.postMessage({ type: 'cloneable-select-node', requestId, nodeId }, '*');
+  postCloneableMessage({ type: 'cloneable-select-node', requestId, nodeId }, '*');
   flashRow(`[data-node-id="${cssEscape(nodeId)}"]`);
 }
 
 function selectUnstarredSection(connectionId, sectionId) {
   const requestId = Date.now();
-  window.postMessage({
+  postCloneableMessage({
     type: 'cloneable-select-section',
     requestId, connectionId, sectionId,
   }, '*');
@@ -5549,12 +5572,13 @@ function handleAutoStarClick() {
   const requestId = Date.now();
   let settled = false;
   const handler = (event) => {
-    if (!event.data || event.data.type !== 'cloneable-auto-star-result') return;
-    if (event.data.requestId !== requestId) return;
+    const payload = readCloneableMessage(event);
+    if (!payload || payload.type !== 'cloneable-auto-star-result') return;
+    if (payload.requestId !== requestId) return;
     settled = true;
     window.removeEventListener('message', handler);
     unstarredBadgeState.busy = false;
-    const r = event.data.result || {};
+    const r = payload.result || {};
     if (r.applied) {
       // Build a friendly success summary. The natural recount that follows
       // Katapult's Firebase write round-trip will drop the count to whatever's
@@ -5573,7 +5597,7 @@ function handleAutoStarClick() {
     }
   };
   window.addEventListener('message', handler);
-  window.postMessage({ type: 'cloneable-auto-star', requestId }, '*');
+  postCloneableMessage({ type: 'cloneable-auto-star', requestId }, '*');
   // Safety release if inject.js never responds (extension context broken, etc.)
   setTimeout(() => {
     if (settled) return;
@@ -5596,7 +5620,8 @@ function handleAutoStarClick() {
 // shouldn't silently re-enable our overlay. We snapshot the preference into
 // the closure so each retry doesn't repay the storage round-trip.
 window.addEventListener('message', async (event) => {
-  if (!event.data || event.data.type !== 'cloneable-stick-line-reapply') return;
+  const payload = readCloneableMessage(event);
+  if (!payload || payload.type !== 'cloneable-stick-line-reapply') return;
   let extendStickLine;
   try {
     ({ extendStickLine } = await chrome.storage.local.get('extendStickLine'));
@@ -5648,18 +5673,19 @@ function coerceConnSample(c) {
 
 // Listen for unstarred-count + job-loading messages from inject.js
 window.addEventListener('message', (event) => {
-  if (!event.data || typeof event.data.type !== 'string') return;
-  if (event.data.type === 'cloneable-unstarred-count') {
-    const incomingJobId = coerceStr(event.data.jobId);
+  const payload = readCloneableMessage(event);
+  if (!payload || typeof payload.type !== 'string') return;
+  if (payload.type === 'cloneable-unstarred-count') {
+    const incomingJobId = coerceStr(payload.jobId);
     const jobChanged = unstarredBadgeState.jobId !== incomingJobId;
     unstarredBadgeState.jobId = incomingJobId;
-    unstarredBadgeState.count = coerceFiniteInt(event.data.unstarredNodeCount);
-    unstarredBadgeState.connCount = coerceFiniteInt(event.data.unstarredConnectionCount);
-    unstarredBadgeState.samples = Array.isArray(event.data.samples)
-      ? event.data.samples.map(coerceNodeSample).filter(Boolean)
+    unstarredBadgeState.count = coerceFiniteInt(payload.unstarredNodeCount);
+    unstarredBadgeState.connCount = coerceFiniteInt(payload.unstarredConnectionCount);
+    unstarredBadgeState.samples = Array.isArray(payload.samples)
+      ? payload.samples.map(coerceNodeSample).filter(Boolean)
       : [];
-    unstarredBadgeState.connSamples = Array.isArray(event.data.connSamples)
-      ? event.data.connSamples.map(coerceConnSample).filter(Boolean)
+    unstarredBadgeState.connSamples = Array.isArray(payload.connSamples)
+      ? payload.connSamples.map(coerceConnSample).filter(Boolean)
       : [];
     unstarredBadgeState.loading = false;
     if (jobChanged) {
@@ -5671,8 +5697,8 @@ window.addEventListener('message', (event) => {
       unstarredBadgeState.expanded = false;
     }
     renderUnstarredBadge();
-  } else if (event.data.type === 'cloneable-job-loading') {
-    const incomingJobId = coerceStr(event.data.jobId);
+  } else if (payload.type === 'cloneable-job-loading') {
+    const incomingJobId = coerceStr(payload.jobId);
     if (unstarredBadgeState.jobId !== incomingJobId) {
       unstarredBadgeState.dismissedJobId = null;
       unstarredBadgeState.expanded = false;
@@ -5689,7 +5715,7 @@ window.addEventListener('message', (event) => {
 
 // Initial pref load + nudge inject.js for a count in case it already ran nodesLoaded.
 loadUnstarredBadgePref();
-setTimeout(() => window.postMessage({ type: 'cloneable-request-unstarred-count' }, '*'), 3000);
+setTimeout(() => postCloneableMessage({ type: 'cloneable-request-unstarred-count' }, '*'), 3000);
 
 // Inject a tiny stylesheet into each KATAPULT-PHOTO-VIEWER's shadow root that
 // hides any .stickLine which we haven't explicitly marked as positioned, but
@@ -5861,7 +5887,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // per-job dismiss so the badge actually comes back into view.
       unstarredBadgeState.dismissedJobId = null;
       // Ask inject.js for a fresh count so the badge populates immediately.
-      window.postMessage({ type: 'cloneable-request-unstarred-count' }, '*');
+      postCloneableMessage({ type: 'cloneable-request-unstarred-count' }, '*');
     }
     renderUnstarredBadge();
     sendResponse({ applied: true, message: message.enabled ? 'Badge enabled' : 'Badge hidden' });
@@ -5889,7 +5915,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     unstarredBadgeState.enabled = true;
     unstarredBadgeState.dismissedJobId = null;
     chrome.storage.local.set({ showUnstarredBadge: true });
-    window.postMessage({ type: 'cloneable-request-unstarred-count' }, '*');
+    postCloneableMessage({ type: 'cloneable-request-unstarred-count' }, '*');
     renderUnstarredBadge();
     sendResponse({ applied: true });
     return;
@@ -5902,14 +5928,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     const requestId = Date.now();
     const handler = (event) => {
-      if (!event.data || event.data.type !== 'cloneable-auto-calibrate-result') return;
-      if (event.data.requestId !== requestId) return;
+      const payload = readCloneableMessage(event);
+      if (!payload || payload.type !== 'cloneable-auto-calibrate-result') return;
+      if (payload.requestId !== requestId) return;
       window.removeEventListener('message', handler);
-      sendResponse(event.data.result || { applied: false, message: 'No response' });
+      sendResponse(payload.result || { applied: false, message: 'No response' });
     };
     window.addEventListener('message', handler);
     chrome.storage.local.get('autoConfirmDoItAnyway', (res) => {
-      window.postMessage({
+      postCloneableMessage({
         type: 'cloneable-auto-calibrate',
         requestId,
         autoConfirm: res.autoConfirmDoItAnyway !== false
