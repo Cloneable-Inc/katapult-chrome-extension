@@ -1,3 +1,24 @@
+// Katapult's window message listener JSON-parses every payload. Keep our
+// cross-world messages JSON strings so its listener can safely ignore them.
+function postCloneableMessage(message, targetOrigin = '*') {
+  window.postMessage(JSON.stringify(message), targetOrigin);
+}
+
+function readCloneableMessage(event) {
+  if (event.source !== window) return null;
+  let message = event.data;
+  if (typeof message === 'string') {
+    try {
+      message = JSON.parse(message);
+    } catch {
+      return null;
+    }
+  }
+  // Accept object payloads as well for compatibility with existing callers.
+  return message && typeof message.type === 'string' &&
+    message.type.startsWith('cloneable-') ? message : null;
+}
+
 // Cloneable Extension - WebSocket Interceptor
 // This script intercepts WebSocket messages and reconstructs complete JSON from all messages
 // FIXED: Now properly handles company-specific paths like photoheight/company_space/*/models/attributes
@@ -34,7 +55,7 @@ window.WebSocket = function(url, protocols) {
     window.katapultWebSocketMessages.push(messageObj);
     
     // Send status update to content script
-    window.postMessage({
+    postCloneableMessage({
       type: 'cloneable-websocket-update',
       messageCount: window.katapultWebSocketMessages.length,
       socketCount: 1
@@ -282,7 +303,7 @@ function performReconstructionFinalization() {
   
   
   // Send complete reconstructed data to content script
-  window.postMessage({
+  postCloneableMessage({
     type: 'cloneable-data-updated',
     nodeTypes: window.katapultProcessedNodeTypes || [],
     connectionTypes: window.katapultProcessedConnectionTypes || [],
@@ -1335,7 +1356,7 @@ function scheduleUnstarredRecount(reason) {
     // If there are no candidates, skip the eligibility check entirely.
     if (initial.unstarredNodeCount === 0 && initial.unstarredConnectionCount === 0) {
       __cloneableLastRefined = initial;
-      window.postMessage({
+      postCloneableMessage({
         type: 'cloneable-unstarred-count',
         reason: reason || 'tick',
         jobId: initial.jobId,
@@ -1351,7 +1372,7 @@ function scheduleUnstarredRecount(reason) {
     // Drop stale results if a newer recount has been scheduled since.
     if (myToken !== __cloneableRecountToken) return;
     __cloneableLastRefined = refined;
-    window.postMessage({
+    postCloneableMessage({
       type: 'cloneable-unstarred-count',
       reason: reason || 'tick',
       jobId: refined.jobId,
@@ -1397,7 +1418,7 @@ function installStarHooks() {
     // arguments so the original keeps any params it relies on.
     const r = origJobIdChanged.apply(map, arguments);
     try {
-      window.postMessage({
+      postCloneableMessage({
         type: 'cloneable-job-loading',
         jobId: map.job_id || null,
       }, '*');
@@ -1566,54 +1587,55 @@ window.cloneableSelectSection = selectSectionOnMap;
 
 // Listen for reconstruction trigger from content script
 window.addEventListener('message', function(event) {
-  if (event.data && event.data.type === 'cloneable-trigger-reconstruction') {
+  const payload = readCloneableMessage(event);
+  if (payload && payload.type === 'cloneable-trigger-reconstruction') {
     performReconstructionFinalization();
-  } else if (event.data && event.data.type === 'cloneable-get-websocket-data-dump') {
+  } else if (payload && payload.type === 'cloneable-get-websocket-data-dump') {
 
     // Send the WebSocket messages back to content script
-    window.postMessage({
+    postCloneableMessage({
       type: 'cloneable-websocket-data-response',
       messages: window.katapultWebSocketMessages || [],
       messageCount: (window.katapultWebSocketMessages || []).length,
       timestamp: new Date().toISOString()
     }, '*');
 
-  } else if (event.data && event.data.type === 'cloneable-auto-calibrate') {
-    const result = autoCalibratePurpleMarkers({ autoConfirm: event.data.autoConfirm });
-    window.postMessage({
+  } else if (payload && payload.type === 'cloneable-auto-calibrate') {
+    const result = autoCalibratePurpleMarkers({ autoConfirm: payload.autoConfirm });
+    postCloneableMessage({
       type: 'cloneable-auto-calibrate-result',
-      requestId: event.data.requestId,
+      requestId: payload.requestId,
       result: result
     }, '*');
-  } else if (event.data && event.data.type === 'cloneable-request-unstarred-count') {
+  } else if (payload && payload.type === 'cloneable-request-unstarred-count') {
     scheduleUnstarredRecount('request');
-  } else if (event.data && event.data.type === 'cloneable-auto-star') {
-    const requestId = event.data.requestId;
+  } else if (payload && payload.type === 'cloneable-auto-star') {
+    const requestId = payload.requestId;
     autoStarUnstarredNodes().then(result => {
-      window.postMessage({
+      postCloneableMessage({
         type: 'cloneable-auto-star-result',
         requestId,
         result,
       }, '*');
     }).catch(e => {
-      window.postMessage({
+      postCloneableMessage({
         type: 'cloneable-auto-star-result',
         requestId,
         result: { applied: false, message: 'rejected: ' + (e?.message || e) },
       }, '*');
     });
-  } else if (event.data && event.data.type === 'cloneable-select-node') {
-    const result = selectNodeOnMap(event.data.nodeId);
-    window.postMessage({
+  } else if (payload && payload.type === 'cloneable-select-node') {
+    const result = selectNodeOnMap(payload.nodeId);
+    postCloneableMessage({
       type: 'cloneable-select-node-result',
-      requestId: event.data.requestId,
+      requestId: payload.requestId,
       result,
     }, '*');
-  } else if (event.data && event.data.type === 'cloneable-select-section') {
-    const result = selectSectionOnMap(event.data.connectionId, event.data.sectionId);
-    window.postMessage({
+  } else if (payload && payload.type === 'cloneable-select-section') {
+    const result = selectSectionOnMap(payload.connectionId, payload.sectionId);
+    postCloneableMessage({
       type: 'cloneable-select-section-result',
-      requestId: event.data.requestId,
+      requestId: payload.requestId,
       result,
     }, '*');
   }
@@ -1669,7 +1691,7 @@ function installStickLineHideOnPhotoChange() {
       }
     } catch (e) {}
     try {
-      window.postMessage({ type: 'cloneable-stick-line-reapply' }, '*');
+      postCloneableMessage({ type: 'cloneable-stick-line-reapply' }, '*');
     } catch (e) {}
     return r;
   };
